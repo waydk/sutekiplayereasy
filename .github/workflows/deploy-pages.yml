@@ -1,3 +1,6 @@
+# Собирает Vite и пушит только dist в ветку gh-pages.
+# GitHub: Settings → Pages → Source: Deploy from a branch → Branch: gh-pages / folder: / (root)
+
 name: Deploy GitHub Pages
 
 on:
@@ -5,16 +8,14 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +26,6 @@ jobs:
       - run: npm ci
       - name: Build
         env:
-          # Проектный сайт: /имя-репо/; для USER.github.io — корень /
           VITE_BASE: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
         run: npm run build
       - name: Verify production bundle (not raw /src/)
@@ -34,17 +34,10 @@ jobs:
             echo 'ERROR: dist/index.html still has dev entry /src/main.tsx'
             exit 1
           fi
-          grep -qE '/assets/.+\.(js|css)' dist/index.html || { echo 'ERROR: dist/index.html must reference built /assets/*.js|css'; exit 1; }
-      - uses: actions/upload-pages-artifact@v3
+          grep -qE '/assets/.+\.(js|css)' dist/index.html || { echo 'ERROR: dist must reference built /assets/*.js|css'; exit 1; }
+      - name: Push dist to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/deploy-pages@v4
-        id: deployment
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          force_orphan: true
