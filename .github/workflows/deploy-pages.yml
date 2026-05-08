@@ -28,6 +28,13 @@ jobs:
           # Проектный сайт: /имя-репо/; для USER.github.io — корень /
           VITE_BASE: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
         run: npm run build
+      - name: Verify production bundle (not raw /src/)
+        run: |
+          if grep -qF '/src/main.tsx' dist/index.html; then
+            echo 'ERROR: dist/index.html still has dev entry /src/main.tsx'
+            exit 1
+          fi
+          grep -qE '/assets/.+\.(js|css)' dist/index.html || { echo 'ERROR: dist/index.html must reference built /assets/*.js|css'; exit 1; }
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
