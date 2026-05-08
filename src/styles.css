@@ -1,0 +1,1078 @@
+/* Suteki Player Easy — responsive layout (mobile / tablet / desktop) */
+
+:root {
+  --sh-bg: #0b0d12;
+  --sh-card: rgba(255, 255, 255, 0.04);
+  --sh-border: rgba(255, 255, 255, 0.1);
+  --sh-text: rgba(255, 255, 255, 0.92);
+  --sh-muted: rgba(255, 255, 255, 0.68);
+  --sh-accent: #7c5cff;
+  --sh-danger: #ff4d4d;
+  --sh-radius: 16px;
+  --sh-shell-max: 1040px;
+  --sh-focus-ring: 0 0 0 3px rgba(124, 92, 255, 0.22);
+  --sh-tap-min: 44px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body.player-root {
+  background: radial-gradient(1200px 700px at 50% 25%, #1a1630 0%, var(--sh-bg) 55%);
+  color: var(--sh-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow-x: clip;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+body.player-root.sh-nav-locked {
+  overflow: hidden;
+}
+
+img,
+video,
+iframe {
+  max-width: 100%;
+  height: auto;
+}
+
+.sh-page {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: center;
+  padding: clamp(10px, 2.8vw, 18px);
+  width: 100%;
+  max-width: 100%;
+}
+
+.sh-shell {
+  position: relative;
+  width: 100%;
+  max-width: min(var(--sh-shell-max), 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: stretch;
+  align-items: stretch;
+  gap: clamp(10px, 2vw, 12px);
+}
+
+.sh-shell > * {
+  min-width: 0;
+}
+
+/* ——— Mobile top bar + drawer ——— */
+
+.sh-mobile-bar {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  margin: calc(-1 * clamp(10px, 2.8vw, 18px)) calc(-1 * clamp(10px, 2.8vw, 18px)) 0;
+  width: calc(100% + 2 * clamp(10px, 2.8vw, 18px));
+  max-width: none;
+  background: rgba(11, 13, 18, 0.72);
+  border: 1px solid var(--sh-border);
+  border-radius: var(--sh-radius);
+  backdrop-filter: blur(12px);
+}
+
+.sh-burger {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--sh-tap-min);
+  min-width: var(--sh-tap-min);
+  height: var(--sh-tap-min);
+  min-height: var(--sh-tap-min);
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--sh-text);
+  cursor: pointer;
+}
+
+.sh-burger:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sh-burger:active {
+  transform: scale(0.98);
+}
+
+.sh-burger:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-burger-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 18px;
+}
+
+.sh-burger-lines span {
+  display: block;
+  height: 2px;
+  width: 100%;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+.sh-controls-panel {
+  display: contents;
+}
+
+.sh-drawer-backdrop {
+  display: none;
+}
+
+/* ——— Cards ——— */
+
+.sh-card {
+  background: var(--sh-card);
+  border: 1px solid var(--sh-border);
+  border-radius: var(--sh-radius);
+  backdrop-filter: blur(10px);
+  max-width: 100%;
+  width: 100%;
+  justify-self: stretch;
+}
+
+.sh-header {
+  padding: clamp(12px, 2.5vw, 14px) clamp(12px, 2.5vw, 16px);
+}
+
+.sh-header-anime-title {
+  margin: 0 0 clamp(8px, 1.4vw, 11px) 0;
+  font-size: clamp(0.8125rem, 0.74rem + 0.4vw, 0.9375rem);
+  font-weight: 650;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.92);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sh-header-telegram {
+  margin: 0;
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+  line-height: 1.45;
+  color: var(--sh-muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sh-brand {
+  --sh-brand-size: clamp(1.12rem, 1rem + 0.65vw, 1.42rem);
+  font-size: var(--sh-brand-size);
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.28em 0.45em;
+  margin: 0 0 clamp(6px, 1.2vw, 10px) 0;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.sh-mobile-bar .sh-brand {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.sh-brand-suteki {
+  font-size: 1em;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  background: linear-gradient(
+    105deg,
+    #f2f5fb 0%,
+    #c5d2f5 18%,
+    #eef2ff 38%,
+    #8fa8ff 58%,
+    #dce4ff 78%,
+    #f2f5fb 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: sh-brand-shimmer 5.5s ease-in-out infinite;
+}
+
+.sh-brand-hub {
+  font-size: 0.4em;
+  font-weight: 650;
+  letter-spacing: 0.18em;
+  text-transform: lowercase;
+  color: var(--sh-muted);
+  line-height: 1;
+  padding-bottom: 0.12em;
+  opacity: 0.9;
+  animation: sh-brand-hub-fade 4s ease-in-out infinite;
+}
+
+.sh-brand--compact {
+  --sh-brand-size: clamp(0.92rem, 0.86rem + 0.45vw, 1.05rem);
+}
+
+.sh-brand--compact .sh-brand-suteki {
+  letter-spacing: 0.05em;
+}
+
+.sh-brand--compact .sh-brand-hub {
+  font-size: 0.46em;
+  letter-spacing: 0.14em;
+}
+
+@keyframes sh-brand-shimmer {
+  0%,
+  100% {
+    background-position: 0% 50%;
+    filter: drop-shadow(0 0 14px rgba(143, 168, 255, 0.22));
+  }
+  50% {
+    background-position: 100% 50%;
+    filter: drop-shadow(0 0 20px rgba(200, 210, 255, 0.38));
+  }
+}
+
+@keyframes sh-brand-hub-fade {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sh-brand-suteki {
+    animation: none;
+    background-position: 35% 50%;
+    filter: drop-shadow(0 0 12px rgba(143, 168, 255, 0.25));
+  }
+
+  .sh-brand-hub {
+    animation: none;
+    opacity: 0.88;
+  }
+}
+
+.sh-subtitle {
+  margin: 0;
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+  line-height: 1.4;
+  color: var(--sh-muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sh-toolbar {
+  padding: clamp(10px, 2.2vw, 12px) clamp(12px, 2.5vw, 16px);
+  display: flex;
+  gap: clamp(8px, 1.8vw, 10px);
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+.sh-toolbar--stack .sh-input {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.sh-toolbar--hits {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.sh-toolbar-hint {
+  margin: 0 0 4px 0;
+  width: 100%;
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+  color: var(--sh-muted);
+  line-height: 1.35;
+}
+
+.sh-input {
+  flex: 1 1 min(100%, 240px);
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  height: var(--sh-tap-min);
+  min-height: var(--sh-tap-min);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--sh-text);
+  padding: 0 12px;
+  outline: none;
+  font-size: clamp(0.8125rem, 0.76rem + 0.2vw, 0.875rem);
+}
+
+.sh-input::placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sh-input:focus-visible {
+  border-color: rgba(124, 92, 255, 0.55);
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-btn {
+  height: var(--sh-tap-min);
+  min-height: var(--sh-tap-min);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--sh-text);
+  cursor: pointer;
+  padding: 0 clamp(10px, 2.5vw, 12px);
+  font-weight: 650;
+  letter-spacing: 0.2px;
+  font-size: clamp(0.8125rem, 0.76rem + 0.2vw, 0.875rem);
+  flex: 1 1 auto;
+  min-width: min(100%, 120px);
+  max-width: 100%;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.sh-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sh-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.sh-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-btn.primary {
+  border-color: rgba(124, 92, 255, 0.55);
+  background: rgba(124, 92, 255, 0.18);
+}
+
+.sh-btn.primary:hover:not(:disabled) {
+  background: rgba(124, 92, 255, 0.26);
+}
+
+.sh-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sh-mini-btn {
+  height: 38px;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  font-weight: 650;
+  letter-spacing: 0.1px;
+  font-size: clamp(0.75rem, 0.7rem + 0.2vw, 0.8125rem);
+  max-width: 100%;
+}
+
+.sh-mini-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sh-mini-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.sh-mini-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-mini-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sh-status {
+  padding: clamp(10px, 2.2vw, 12px) clamp(12px, 2.5vw, 16px);
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+  color: var(--sh-muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sh-status.error {
+  color: rgba(255, 255, 255, 0.9);
+  border-top: 1px solid rgba(255, 77, 77, 0.35);
+  background: rgba(255, 77, 77, 0.08);
+}
+
+.sh-player-cta {
+  display: inline;
+}
+
+.sh-telegram-channel-link {
+  color: #9eb6ff;
+  font-weight: 650;
+  text-decoration: none;
+  text-underline-offset: 0.15em;
+}
+
+.sh-telegram-channel-link:hover {
+  text-decoration: underline;
+  color: #c8d4ff;
+}
+
+.sh-telegram-channel-link:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+  border-radius: 4px;
+}
+
+.sh-player-card {
+  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+}
+
+.sh-stage {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(10px, 2vw, 12px);
+  padding: clamp(8px, 2vw, 12px);
+  align-items: start;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.sh-stage.sh-stage--mylist-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sh-video-pane {
+  position: relative;
+  background: #000;
+  min-width: 0;
+  align-self: start;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  width: 100%;
+  max-width: 100%;
+}
+
+.sh-video-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  overflow: hidden;
+}
+
+.sh-video-placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  text-align: center;
+}
+
+.sh-kodik-embed {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border: 0;
+  background: #000;
+}
+
+.sh-hud-top {
+  position: absolute;
+  left: clamp(6px, 2vw, 10px);
+  right: clamp(6px, 2vw, 10px);
+  top: clamp(6px, 2vw, 10px);
+  pointer-events: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: clamp(6px, 1.5vw, 10px);
+  max-width: 100%;
+  flex-wrap: wrap;
+  z-index: 2;
+}
+
+.sh-hud-top--end {
+  justify-content: flex-end;
+}
+
+.sh-hud-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(10px);
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+  color: rgba(255, 255, 255, 0.9);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.sh-hud-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sh-hud-controls {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sh-quality-select {
+  height: 38px;
+  min-height: 38px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 0 10px;
+  font-weight: 800;
+  outline: none;
+  max-width: 100%;
+  min-width: 0;
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+}
+
+.sh-quality-select:disabled {
+  opacity: 0.6;
+}
+
+.sh-quality-select:focus-visible {
+  border-color: rgba(124, 92, 255, 0.55);
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-buffer-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.sh-buffer-overlay::after {
+  content: "";
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: rgba(255, 255, 255, 0.75);
+  border-radius: 50%;
+  animation: sh-buffer-spin 0.75s linear infinite;
+}
+
+@keyframes sh-buffer-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sh-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ——— Breakpoints (320 / 375 / 425 / 768 / 1024 / 1440) ——— */
+
+@media (max-width: 319.98px) {
+  :root {
+    --sh-radius: 12px;
+  }
+
+  .sh-toolbar .sh-btn {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+}
+
+@media (min-width: 320px) and (max-width: 374.98px) {
+  .sh-toolbar .sh-btn {
+    flex: 1 1 calc(50% - 6px);
+    min-width: min(100%, 140px);
+  }
+}
+
+@media (min-width: 375px) and (max-width: 424.98px) {
+  .sh-page {
+    padding: 12px;
+  }
+}
+
+@media (min-width: 425px) and (max-width: 767.98px) {
+  .sh-input {
+    flex: 1 1 min(100%, 280px);
+  }
+}
+
+/* Mobile drawer: < 768px */
+@media (max-width: 767.98px) {
+  .sh-mobile-bar {
+    display: flex;
+  }
+
+  /* Убираем панель из потока grid — только бар + плеер дают строки */
+  .sh-controls-panel {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 0;
+    overflow: visible;
+    pointer-events: none;
+    z-index: 50;
+  }
+
+  .sh-controls-panel-inner {
+    pointer-events: auto;
+  }
+
+  .sh-drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+  }
+
+  .sh-drawer-backdrop.is-open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .sh-controls-panel-inner {
+    position: fixed;
+    top: 0;
+    right: 0;
+    left: 0;
+    z-index: 50;
+    max-height: min(88vh, 100dvh);
+    overflow-y: auto;
+    padding: calc(env(safe-area-inset-top, 0px) + 8px) clamp(12px, 3vw, 16px) 16px;
+    background: rgba(15, 17, 24, 0.96);
+    border: 1px solid var(--sh-border);
+    border-radius: 0 0 var(--sh-radius) var(--sh-radius);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+    transform: translateY(-102%);
+    transition: transform 0.22s ease;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(10px, 2vw, 12px);
+  }
+
+  .sh-controls-panel-inner.is-open {
+    transform: translateY(0);
+  }
+
+  .sh-controls-panel-inner .sh-card {
+    margin: 0;
+  }
+
+  .sh-toolbar--translation .sh-status--inline {
+    flex: 1 1 100%;
+  }
+}
+
+.sh-status--inline {
+  padding: 0;
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: center;
+}
+
+@media (min-width: 768px) {
+  .sh-mobile-bar {
+    display: none !important;
+  }
+
+  .sh-drawer-backdrop {
+    display: none !important;
+  }
+
+  .sh-controls-panel {
+    display: contents;
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    pointer-events: auto;
+    z-index: auto;
+  }
+
+  .sh-controls-panel-inner {
+    display: contents;
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    transform: none;
+    gap: 0;
+    pointer-events: auto;
+  }
+
+  .sh-toolbar .sh-input {
+    flex: 1 1 200px;
+  }
+
+  .sh-toolbar .sh-btn {
+    flex: 0 1 auto;
+    white-space: nowrap;
+    min-width: 0;
+    max-width: none;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --sh-shell-max: 1080px;
+  }
+}
+
+@media (min-width: 1440px) {
+  :root {
+    --sh-shell-max: 1140px;
+  }
+
+  .sh-page {
+    padding: 20px 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sh-drawer-backdrop,
+  .sh-controls-panel-inner {
+    transition: none;
+  }
+
+  .sh-btn:active:not(:disabled),
+  .sh-burger:active,
+  .sh-mini-btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ——— Демо UI: озвучка / серии / хронология (мок-данные, без бэкенда) ——— */
+
+.sh-watch-section {
+  padding: clamp(12px, 2.5vw, 16px);
+  overflow-x: clip;
+  max-width: 100%;
+}
+
+.sh-watch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: clamp(8px, 1.8vw, 12px);
+}
+
+.sh-watch-head__title {
+  margin: 0;
+  font-size: clamp(0.6875rem, 0.58rem + 0.55vw, 0.8125rem);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.88);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.sh-watch-head__badge {
+  flex: 0 0 auto;
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+  font-weight: 700;
+  color: var(--sh-muted);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.sh-watch-empty {
+  margin: 0 0 12px 0;
+  font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
+  color: var(--sh-muted);
+  line-height: 1.45;
+}
+
+.sh-shiki-hits {
+  list-style: none;
+  margin: 0 0 12px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(40vh, 280px);
+  overflow-y: auto;
+  width: 100%;
+}
+
+.sh-shiki-hits__item {
+  margin: 0;
+  padding: 0;
+}
+
+.sh-shiki-hit {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--sh-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: clamp(0.8125rem, 0.76rem + 0.2vw, 0.875rem);
+  line-height: 1.35;
+}
+
+.sh-shiki-hit:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sh-shiki-hit:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-shiki-hit.is-active {
+  border-color: rgba(124, 92, 255, 0.55);
+  background: rgba(124, 92, 255, 0.12);
+}
+
+.sh-shiki-hit__kind {
+  display: block;
+  margin-top: 4px;
+  font-size: clamp(0.625rem, 0.58rem + 0.25vw, 0.6875rem);
+  color: var(--sh-muted);
+}
+
+/* ——— Хронология: горизонтальная карусель ——— */
+
+.sh-chrono-carousel {
+  display: flex;
+  align-items: stretch;
+  gap: clamp(6px, 1.5vw, 10px);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.sh-chrono-nav {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--sh-tap-min);
+  min-width: var(--sh-tap-min);
+  height: var(--sh-tap-min);
+  min-height: var(--sh-tap-min);
+  padding: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.4);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+}
+
+.sh-chrono-nav:hover:not(:disabled):not(.is-disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sh-chrono-nav:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-chrono-nav.is-disabled,
+.sh-chrono-nav:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.sh-chrono-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 4px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  outline: none;
+}
+
+.sh-chrono-scroll:focus-visible {
+  box-shadow: var(--sh-focus-ring);
+  border-radius: 12px;
+}
+
+.sh-chrono-track {
+  list-style: none;
+  margin: 0;
+  padding: 4px 2px 8px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: clamp(10px, 2vw, 14px);
+  width: max-content;
+  max-width: none;
+}
+
+.sh-chrono-track__item {
+  flex: 0 0 auto;
+  width: min(104px, 32vw);
+  max-width: 118px;
+  margin: 0;
+  padding: 0;
+  scroll-snap-align: start;
+}
+
+.sh-chrono-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.sh-chrono-card:focus-visible {
+  outline: none;
+  border-radius: 12px;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-chrono-card__media {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  aspect-ratio: 2 / 3;
+}
+
+.sh-chrono-card__media img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sh-chrono-card__body {
+  padding: 6px 0 0;
+  min-width: 0;
+}
+
+.sh-chrono-card__title {
+  margin: 0 0 2px 0;
+  font-size: clamp(0.6875rem, 0.62rem + 0.3vw, 0.75rem);
+  font-weight: 750;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.sh-chrono-card__meta {
+  margin: 0;
+  font-size: clamp(0.5625rem, 0.52rem + 0.22vw, 0.625rem);
+  color: var(--sh-muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sh-chrono-card.is-active .sh-chrono-card__media {
+  border-color: rgba(124, 92, 255, 0.75);
+  box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.22);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sh-chrono-scroll {
+    scroll-behavior: auto;
+  }
+}
