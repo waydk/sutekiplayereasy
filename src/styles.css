@@ -305,6 +305,32 @@ iframe {
   min-width: 0;
 }
 
+.sh-toolbar--search-only .sh-input {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+/* Мобильный поиск в потоке; в drawer — только десктопная строка с кнопкой */
+.sh-search-mobile {
+  display: none;
+}
+
+@media (max-width: 767.98px) {
+  .sh-search-mobile {
+    display: block;
+  }
+
+  .sh-search-desktop {
+    display: none !important;
+  }
+}
+
+@media (min-width: 768px) {
+  .sh-search-mobile {
+    display: none !important;
+  }
+}
+
 .sh-toolbar--hits {
   flex-direction: column;
   align-items: stretch;

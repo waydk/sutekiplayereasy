@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { WatchPanels } from "./WatchPanels";
 import type { ChronologyEntry, ShikiAnimeBrief } from "./shikimoriApi";
 import {
@@ -419,67 +419,83 @@ export function PlayerPage() {
     [applyAnimeSelection],
   );
 
-  const controls = (
-    <>
-      <div className="sh-card sh-header">
-        <BrandTitle />
-        {selectedAnime ? (
-          <p className="sh-header-anime-title">{displayTitle(selectedAnime)}</p>
-        ) : null}
-        <p className="sh-header-telegram">
-          Подпишитесь на наш телеграм-канал{" "}
-          <a
-            className="sh-telegram-channel-link"
-            href={TELEGRAM_CHANNEL_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            sutekianime
-          </a>
-        </p>
-      </div>
+  const searchInputProps = {
+    className: "sh-input" as const,
+    placeholder: "Название аниме (Shikimori)",
+    value: titleSearch,
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setTitleSearch(e.target.value),
+    onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        void searchShikimori();
+      }
+    },
+    "aria-label": "Поиск аниме в Shikimori",
+  };
 
-      <div className="sh-card sh-toolbar sh-toolbar--stack">
-        <input
-          className="sh-input"
-          placeholder="Название аниме (Shikimori)"
-          value={titleSearch}
-          onChange={(e) => setTitleSearch(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void searchShikimori();
-            }
-          }}
-          aria-label="Поиск аниме в Shikimori"
-        />
-        <button type="button" className="sh-btn primary" onClick={() => void searchShikimori()} disabled={shikiBusy || busy}>
-          Искать в Shikimori
-        </button>
-      </div>
-
-      {searchHits.length > 0 ? (
-        <div className="sh-card sh-toolbar sh-toolbar--hits">
-          <p className="sh-toolbar-hint">Результаты Shikimori — нажмите, чтобы выбрать:</p>
-          <ul className="sh-shiki-hits" role="listbox" aria-label="Результаты поиска Shikimori">
-            {searchHits.map((a) => (
-              <li key={a.id} className="sh-shiki-hits__item" role="none">
-                <button
-                  type="button"
-                  className={`sh-shiki-hit${selectedAnime?.id === a.id ? " is-active" : ""}`}
-                  role="option"
-                  onClick={() => void pickSearchHit(a)}
-                >
-                  {displayTitle(a)}
-                  <span className="sh-shiki-hit__kind">
-                    {kindLabel(a.kind)} · id {a.id}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
+  const headerCard = (
+    <div className="sh-card sh-header">
+      <BrandTitle />
+      {selectedAnime ? (
+        <p className="sh-header-anime-title">{displayTitle(selectedAnime)}</p>
       ) : null}
+      <p className="sh-header-telegram">
+        Подпишитесь на наш телеграм-канал{" "}
+        <a
+          className="sh-telegram-channel-link"
+          href={TELEGRAM_CHANNEL_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          sutekianime
+        </a>
+      </p>
+    </div>
+  );
+
+  const searchToolbarDesktop = (
+    <div className="sh-card sh-toolbar sh-toolbar--stack sh-search-desktop">
+      <input {...searchInputProps} />
+      <button type="button" className="sh-btn primary" onClick={() => void searchShikimori()} disabled={shikiBusy || busy}>
+        Искать в Shikimori
+      </button>
+    </div>
+  );
+
+  const searchToolbarMobile = (
+    <div className="sh-card sh-toolbar sh-toolbar--stack sh-toolbar--search-only sh-search-mobile">
+      <input {...searchInputProps} enterKeyHint="search" inputMode="search" />
+    </div>
+  );
+
+  const hitsToolbar =
+    searchHits.length > 0 ? (
+      <div className="sh-card sh-toolbar sh-toolbar--hits">
+        <p className="sh-toolbar-hint">Результаты Shikimori — нажмите, чтобы выбрать:</p>
+        <ul className="sh-shiki-hits" role="listbox" aria-label="Результаты поиска Shikimori">
+          {searchHits.map((a) => (
+            <li key={a.id} className="sh-shiki-hits__item" role="none">
+              <button
+                type="button"
+                className={`sh-shiki-hit${selectedAnime?.id === a.id ? " is-active" : ""}`}
+                role="option"
+                onClick={() => void pickSearchHit(a)}
+              >
+                {displayTitle(a)}
+                <span className="sh-shiki-hit__kind">
+                  {kindLabel(a.kind)} · id {a.id}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
+  const drawerControls = (
+    <>
+      {headerCard}
+      {searchToolbarDesktop}
     </>
   );
 
@@ -502,7 +518,7 @@ export function PlayerPage() {
             aria-controls="sh-controls-panel"
             onClick={() => setNavOpen((v) => !v)}
           >
-            <span className="sh-visually-hidden">Параметры поиска и плеера</span>
+            <span className="sh-visually-hidden">Меню: бренд и подсказки</span>
             <span className="sh-burger-lines" aria-hidden>
               <span />
               <span />
@@ -511,17 +527,21 @@ export function PlayerPage() {
           </button>
         </div>
 
+        {searchToolbarMobile}
+
         <div className="sh-controls-panel">
           <nav
             id="sh-controls-panel"
             className={`sh-controls-panel-inner${navOpen ? " is-open" : ""}`}
-            aria-label="Параметры поиска и плеера"
+            aria-label="Меню"
             aria-hidden={isMobileNav ? !navOpen : false}
             inert={isMobileNav && !navOpen ? true : undefined}
           >
-            {controls}
+            {drawerControls}
           </nav>
         </div>
+
+        {hitsToolbar}
 
         <div className="sh-card sh-player-card">
           <div className="sh-stage sh-stage--mylist-collapsed">
