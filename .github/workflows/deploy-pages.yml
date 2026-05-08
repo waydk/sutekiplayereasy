@@ -1,5 +1,7 @@
-# Собирает Vite и пушит только dist в ветку gh-pages.
-# GitHub: Settings → Pages → Source: Deploy from a branch → Branch: gh-pages / folder: / (root)
+# Кладёт сборку Vite в docs/ на ветке main.
+# GitHub → Settings → Pages → Deploy from a branch → Branch: main → Folder: /docs
+#
+# Пуш коммитом GITHUB_TOKEN не запускает workflow повторно — зацикливания нет.
 
 name: Deploy GitHub Pages
 
@@ -19,15 +21,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
+
       - run: npm ci
+
       - name: Build
         env:
           VITE_BASE: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
         run: npm run build
+
       - name: Verify production bundle (not raw /src/)
         run: |
           if grep -qF '/src/main.tsx' dist/index.html; then
@@ -35,9 +41,12 @@ jobs:
             exit 1
           fi
           grep -qE '/assets/.+\.(js|css)' dist/index.html || { echo 'ERROR: dist must reference built /assets/*.js|css'; exit 1; }
-      - name: Push dist to gh-pages branch
-        uses: peaceiris/actions-gh-pages@v4
+
+      - name: Publish dist to docs/ on main
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dist
-          force_orphan: true
+          branch: main
+          folder: dist
+          target-folder: docs
+          clean: true
+          commit-message: "chore: update GitHub Pages (docs/) [skip ci]"
