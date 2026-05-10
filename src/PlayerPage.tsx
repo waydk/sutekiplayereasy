@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { WatchPanels } from "./WatchPanels";
 import type { ChronologyEntry, ShikiAnimeBrief } from "./shikimoriApi";
 import {
@@ -23,6 +32,8 @@ type KodikSearchResult = {
 
 const LAST_SHIKI_ID_KEY = "suteki:player_easy:last_shiki_id:v1";
 const LAST_SHIKI_SEARCH_KEY = "suteki:player_easy:last_shiki_search:v1";
+/** Локальный прогресс (серия + озвучка): Kodik iframe чужой origin — внутрь плеера не пишем, только наш ключ. */
+const kodikWatchKey = (shikiId: number) => `suteki:player_easy:kodik_watch:v1:${shikiId}`;
 
 const DEFAULT_KODIK_TOKEN = "56a768d08f43091901c44b54fe970049";
 
@@ -93,6 +104,47 @@ function writeLS(key: string, value: string) {
   }
 }
 
+function clampEpisodeForProgress(ep: number, maxCap: number | null): number {
+  const n = Math.floor(Number(ep));
+  if (!Number.isFinite(n)) return 1;
+  const max = maxCap ?? Number.MAX_SAFE_INTEGER;
+  return Math.min(max, Math.max(1, n));
+}
+
+function readKodikWatch(shikiId: number): { translationId: number | null; episode: number } | null {
+  const raw = readLS(kodikWatchKey(shikiId));
+  if (!raw) return null;
+  try {
+    const j = JSON.parse(raw) as { translationId?: unknown; episode?: unknown };
+    const episode = Math.floor(Number(j.episode));
+    if (!Number.isFinite(episode) || episode < 1) return null;
+    const tid = j.translationId;
+    let translationId: number | null = null;
+    if (typeof tid === "number" && Number.isFinite(tid) && tid > 0) translationId = tid;
+    else if (tid != null && tid !== "") {
+      const n = Math.floor(Number(tid));
+      if (Number.isFinite(n) && n > 0) translationId = n;
+    }
+    return { translationId, episode };
+  } catch {
+    return null;
+  }
+}
+
+function writeKodikWatch(
+  shikiId: number,
+  payload: { translationId: number | null; episode: number },
+) {
+  writeLS(
+    kodikWatchKey(shikiId),
+    JSON.stringify({
+      translationId: payload.translationId,
+      episode: payload.episode,
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
 function dubbingFromKodik(results: KodikSearchResult[], episodeTotal: number): DubbingOption[] {
   const map = new Map<number, KodikSearchResult>();
   for (const r of results) {
@@ -143,6 +195,10 @@ function kodikIframeSrc(list: KodikSearchResult[], translationId: number | null,
       "last",
       "continue",
       "continue_watching",
+      "remember",
+      "save_progress",
+      "start_from",
+      "_ts",
     ];
     for (const k of strip) {
       out.searchParams.delete(k);
@@ -262,10 +318,6 @@ export function PlayerPage() {
   );
 
   useEffect(() => {
-    setCurrentEpisode(1);
-  }, [selectedTranslationId]);
-
-  useEffect(() => {
     setEpisodeDraft(String(currentEpisode));
   }, [currentEpisode]);
 
@@ -274,7 +326,6 @@ export function PlayerPage() {
     writeLS(LAST_SHIKI_ID_KEY, String(a.id));
     setTitleSearch(displayTitle(a));
     writeLS(LAST_SHIKI_SEARCH_KEY, displayTitle(a));
-    setCurrentEpisode(1);
     setResults([]);
     setSelectedTranslationId("");
     setIframeSrc(null);
@@ -301,6 +352,7 @@ export function PlayerPage() {
           kodikSettled.reason instanceof Error ? kodikSettled.reason.message : String(kodikSettled.reason);
         setResults([]);
         setSelectedTranslationId("");
+        setCurrentEpisode(1);
         setStatus({
           text: `Не удалось получить Kodik: ${msg}`,
           error: true,
@@ -313,6 +365,7 @@ export function PlayerPage() {
       if (!list.length) {
         setResults([]);
         setSelectedTranslationId("");
+        setCurrentEpisode(1);
         setStatus({
           text: "К сожалению, на Kodik этого релиза нет.",
           error: false,
@@ -325,6 +378,7 @@ export function PlayerPage() {
       if (!kodikIframeSrc(list, trForOpen, 1)) {
         setResults([]);
         setSelectedTranslationId("");
+        setCurrentEpisode(1);
         setStatus({
           text: "К сожалению, на Kodik этого релиза нет.",
           error: false,
@@ -332,9 +386,25 @@ export function PlayerPage() {
         return;
       }
 
+      const totalEp = episodeTotalFromShiki(a);
+      const maxCap = totalEp > 0 ? totalEp : null;
+      const saved = readKodikWatch(a.id);
+      let trOpen: number | null = typeof firstTr === "number" ? firstTr : null;
+      let epOpen = 1;
+      if (saved) {
+        if (
+          saved.translationId != null &&
+          list.some((r) => Number(r?.translation?.id) === saved.translationId)
+        ) {
+          trOpen = saved.translationId;
+        }
+        epOpen = clampEpisodeForProgress(saved.episode, maxCap);
+      }
+
       setResults(list);
-      if (typeof firstTr === "number") setSelectedTranslationId(firstTr);
+      if (typeof trOpen === "number") setSelectedTranslationId(trOpen);
       else setSelectedTranslationId("");
+      setCurrentEpisode(epOpen);
       setStatus({
         text: STATUS_TELEGRAM_CTA,
         error: false,
@@ -343,6 +413,7 @@ export function PlayerPage() {
       setChronology([]);
       setResults([]);
       setSelectedTranslationId("");
+      setCurrentEpisode(1);
       setStatus({
         text: `Ошибка: ${String(e instanceof Error ? e.message : e)}`,
         error: true,
@@ -408,6 +479,8 @@ export function PlayerPage() {
     [applyAnimeSelection],
   );
 
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
   useEffect(() => {
     if (results.length === 0) {
       setIframeSrc(null);
@@ -415,15 +488,40 @@ export function PlayerPage() {
       return;
     }
     const tr = typeof selectedTranslationId === "number" ? selectedTranslationId : null;
-    const src = kodikIframeSrc(results, tr, currentEpisode);
-    if (!src) {
+    const base = kodikIframeSrc(results, tr, currentEpisode);
+    if (!base) {
       setIframeSrc(null);
       setPlayingUrl("");
       return;
     }
-    setIframeSrc(src);
-    setPlayingUrl(src);
+    try {
+      const u = new URL(base);
+      u.searchParams.set("_ts", String(Date.now()));
+      const src = u.toString();
+      setIframeSrc(src);
+      setPlayingUrl(src);
+    } catch {
+      const join = base.includes("?") ? "&" : "?";
+      const src = `${base}${join}_ts=${Date.now()}`;
+      setIframeSrc(src);
+      setPlayingUrl(src);
+    }
   }, [results, selectedTranslationId, currentEpisode]);
+
+  useLayoutEffect(() => {
+    if (!iframeSrc) return;
+    const el = iframeRef.current;
+    if (!el) return;
+    if (el.src !== iframeSrc) {
+      el.src = iframeSrc;
+    }
+  }, [iframeSrc]);
+
+  useEffect(() => {
+    if (!selectedAnime || results.length === 0) return;
+    const tr = typeof selectedTranslationId === "number" ? selectedTranslationId : null;
+    writeKodikWatch(selectedAnime.id, { translationId: tr, episode: currentEpisode });
+  }, [selectedAnime, selectedTranslationId, currentEpisode, results.length]);
 
   const goToEpisodeFromDraft = useCallback(() => {
     const parsed = parseInt(String(episodeDraft).trim(), 10);
@@ -594,7 +692,8 @@ export function PlayerPage() {
               <div className="sh-video-wrap">
                 {iframeSrc ? (
                   <iframe
-                    key={`${selectedAnime?.id ?? "0"}-${currentEpisode}-${iframeSrc}`}
+                    key={`${selectedAnime?.id ?? "0"}-${currentEpisode}`}
+                    ref={iframeRef}
                     title="Kodik"
                     className="sh-kodik-embed"
                     src={iframeSrc}
