@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { WatchPanels } from "./WatchPanels";
 import type { ChronologyEntry, ShikiAnimeBrief } from "./shikimoriApi";
 import {
@@ -193,6 +193,8 @@ export function PlayerPage() {
   const [busy, setBusy] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const isMobileNav = useMobileNavBreakpoint();
+  const [currentEpisode, setCurrentEpisode] = useState(1);
+  const [episodeDraft, setEpisodeDraft] = useState("1");
 
   const episodeTotal = useMemo(
     () => (selectedAnime ? episodeTotalFromShiki(selectedAnime) : 1),
@@ -213,7 +215,7 @@ export function PlayerPage() {
       document.body.classList.remove("sh-nav-locked");
       return;
     }
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") setNavOpen(false);
     };
     document.addEventListener("keydown", onKey);
@@ -237,11 +239,32 @@ export function PlayerPage() {
     }
   }, [dubbingOptions, selectedTranslationId]);
 
+  const episodeMaxCap = episodeTotal > 0 ? episodeTotal : null;
+
+  const clampEpisodeValue = useCallback(
+    (raw: number) => {
+      const n = Math.floor(Number(raw));
+      if (!Number.isFinite(n)) return 1;
+      const max = episodeMaxCap ?? Number.MAX_SAFE_INTEGER;
+      return Math.min(max, Math.max(1, n));
+    },
+    [episodeMaxCap],
+  );
+
+  useEffect(() => {
+    setCurrentEpisode(1);
+  }, [selectedTranslationId]);
+
+  useEffect(() => {
+    setEpisodeDraft(String(currentEpisode));
+  }, [currentEpisode]);
+
   const applyAnimeSelection = useCallback(async (a: ShikiAnimeBrief) => {
     setSelectedAnime(a);
     writeLS(LAST_SHIKI_ID_KEY, String(a.id));
     setTitleSearch(displayTitle(a));
     writeLS(LAST_SHIKI_SEARCH_KEY, displayTitle(a));
+    setCurrentEpisode(1);
     setResults([]);
     setSelectedTranslationId("");
     setIframeSrc(null);
@@ -375,7 +398,6 @@ export function PlayerPage() {
     [applyAnimeSelection],
   );
 
-  /** Всегда 1-я серия: iframe не привязан к старому номеру из состояния. */
   useEffect(() => {
     if (results.length === 0) {
       setIframeSrc(null);
@@ -383,7 +405,7 @@ export function PlayerPage() {
       return;
     }
     const tr = typeof selectedTranslationId === "number" ? selectedTranslationId : null;
-    const src = kodikIframeSrc(results, tr, 1);
+    const src = kodikIframeSrc(results, tr, currentEpisode);
     if (!src) {
       setIframeSrc(null);
       setPlayingUrl("");
@@ -391,7 +413,20 @@ export function PlayerPage() {
     }
     setIframeSrc(src);
     setPlayingUrl(src);
-  }, [results, selectedTranslationId]);
+  }, [results, selectedTranslationId, currentEpisode]);
+
+  const goToEpisodeFromDraft = useCallback(() => {
+    const parsed = parseInt(String(episodeDraft).trim(), 10);
+    if (!Number.isFinite(parsed)) return;
+    setCurrentEpisode(clampEpisodeValue(parsed));
+  }, [episodeDraft, clampEpisodeValue]);
+
+  const bumpEpisode = useCallback(
+    (delta: number) => {
+      setCurrentEpisode((ep) => clampEpisodeValue(ep + delta));
+    },
+    [clampEpisodeValue],
+  );
 
   const onChronologyPick = useCallback(
     async (entry: ChronologyEntry) => {
@@ -424,7 +459,7 @@ export function PlayerPage() {
     placeholder: "Название аниме (Shikimori)",
     value: titleSearch,
     onChange: (e: ChangeEvent<HTMLInputElement>) => setTitleSearch(e.target.value),
-    onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
+    onKeyDown: (e: ReactKeyboardEvent<HTMLInputElement>) => {
       if (e.key === "Enter") {
         e.preventDefault();
         void searchShikimori();
@@ -549,7 +584,7 @@ export function PlayerPage() {
               <div className="sh-video-wrap">
                 {iframeSrc ? (
                   <iframe
-                    key={`${selectedAnime?.id ?? "0"}-${iframeSrc}`}
+                    key={`${selectedAnime?.id ?? "0"}-${currentEpisode}-${iframeSrc}`}
                     title="Kodik"
                     className="sh-kodik-embed"
                     src={iframeSrc}
@@ -587,6 +622,53 @@ export function PlayerPage() {
                   </div>
                 </div>
               </div>
+
+              {iframeSrc && results.length > 0 ? (
+                <div className="sh-episode-toolbar">
+                  <span className="sh-episode-toolbar__label" id="sh-episode-label">
+                    Серия
+                  </span>
+                  <div className="sh-episode-toolbar__controls" role="group" aria-labelledby="sh-episode-label">
+                    <button
+                      type="button"
+                      className="sh-episode-step"
+                      aria-label="Предыдущая серия"
+                      disabled={currentEpisode <= 1}
+                      onClick={() => bumpEpisode(-1)}
+                    >
+                      −
+                    </button>
+                    <input
+                      className="sh-episode-input"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={episodeMaxCap ?? undefined}
+                      aria-label="Номер серии"
+                      value={episodeDraft}
+                      onChange={(e) => setEpisodeDraft(e.target.value)}
+                      onKeyDown={(e: ReactKeyboardEvent<HTMLInputElement>) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          goToEpisodeFromDraft();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="sh-episode-step"
+                      aria-label="Следующая серия"
+                      disabled={episodeMaxCap != null && currentEpisode >= episodeMaxCap}
+                      onClick={() => bumpEpisode(1)}
+                    >
+                      +
+                    </button>
+                    <button type="button" className="sh-btn primary sh-episode-go" onClick={goToEpisodeFromDraft}>
+                      Перейти
+                    </button>
+                  </div>
+                </div>
+              ) : null}
 
               <div className={`sh-status${status.error ? " error" : ""}`} role={status.error ? "alert" : "status"}>
                 {status.text === STATUS_TELEGRAM_CTA ? (
