@@ -1,7 +1,6 @@
-# Кладёт сборку Vite в docs/ на ветке main.
-# GitHub → Settings → Pages → Deploy from a branch → Branch: main → Folder: /docs
-#
-# Пуш коммитом GITHUB_TOKEN не запускает workflow повторно — зацикливания нет.
+# Сборка Vite и публикация через GitHub Actions (артефакт dist).
+# Репозиторий: Settings → Pages → Build and deployment → Source: GitHub Actions.
+# Для user.github.io без подпути задайте имя репозитория *.github.io — тогда VITE_BASE=/.
 
 name: Deploy GitHub Pages
 
@@ -10,14 +9,19 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +38,7 @@ jobs:
           VITE_BASE: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
         run: npm run build
 
-      - name: Disable Jekyll for docs (use static Vite output as-is)
+      - name: Disable Jekyll (static Vite output as-is)
         run: touch dist/.nojekyll
 
       - name: Verify production bundle (not raw /src/)
@@ -45,11 +49,14 @@ jobs:
           fi
           grep -qE '/assets/.+\.(js|css)' dist/index.html || { echo 'ERROR: dist must reference built /assets/*.js|css'; exit 1; }
 
-      - name: Publish dist to docs/ on main
-        uses: JamesIves/github-pages-deploy-action@v4
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          branch: main
-          folder: dist
-          target-folder: docs
-          clean: true
-          commit-message: "chore: update GitHub Pages (docs/) [skip ci]"
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
