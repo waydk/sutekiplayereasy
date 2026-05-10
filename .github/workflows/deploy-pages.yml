@@ -34,6 +34,9 @@ jobs:
           VITE_BASE: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
         run: npm run build
 
+      - name: Disable Jekyll for docs (use static Vite output as-is)
+        run: touch dist/.nojekyll
+
       - name: Verify production bundle (not raw /src/)
         run: |
           if grep -qF '/src/main.tsx' dist/index.html; then
