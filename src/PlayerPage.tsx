@@ -110,13 +110,23 @@ function dubbingFromKodik(results: KodikSearchResult[], episodeTotal: number): D
     }));
 }
 
+/** API Kodik отдаёт link как `//host/...` — без схемы `new URL()` падает, и серия не попадает в запрос. */
+function absoluteKodikLink(raw: string): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (s.startsWith("//")) return `https:${s}`;
+  return s;
+}
+
 /** Ссылка iframe Kodik для выбранного перевода и серии (translationId null — первый результат с link). */
 function kodikIframeSrc(list: KodikSearchResult[], translationId: number | null, episode: number): string | null {
   const pick =
     translationId != null
       ? list.find((r) => Number(r?.translation?.id) === translationId)
       : list.find((r) => typeof r?.link === "string");
-  const base = pick && typeof pick.link === "string" ? pick.link.trim() : "";
+  const baseRaw = pick && typeof pick.link === "string" ? pick.link.trim() : "";
+  if (!baseRaw) return null;
+  const base = absoluteKodikLink(baseRaw);
   if (!base) return null;
   const ep = Math.max(1, Math.floor(episode) || 1);
   try {
