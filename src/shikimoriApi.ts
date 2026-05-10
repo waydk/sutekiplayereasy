@@ -47,10 +47,18 @@ export type ChronologyEntry = {
   id: string;
   title: string;
   kindLabel: string;
+  /** Сырой `kind` из API (tv, movie, ova, …) */
+  sourceKind: string | null;
+  sourceType: "anime" | "manga";
   year: string;
   relation?: string;
   posterUrl: string | null;
 };
+
+/** Только TV-аниме для основной хронологии; остальное — отдельная карусель. */
+export function isChronologyTvSeries(e: ChronologyEntry): boolean {
+  return e.sourceType === "anime" && e.sourceKind === "tv";
+}
 
 export function posterUrlFromShiki(image?: ShikiImage | null): string | null {
   const p = image?.preview || image?.original || image?.x96;
@@ -119,10 +127,13 @@ function rowToChronology(row: ShikiRelatedRow): ChronologyEntry | null {
   const rel = String(row.relation_russian || row.relation || "").trim();
   if (row.anime?.id) {
     const a = row.anime;
+    const rawKind = a.kind != null && String(a.kind).trim() !== "" ? String(a.kind).trim() : null;
     return {
       id: `anime-${a.id}`,
       title: displayTitle(a),
       kindLabel: kindLabel(a.kind),
+      sourceKind: rawKind,
+      sourceType: "anime",
       year: yearFromShiki(a.aired_on, a.released_on),
       relation: rel || undefined,
       posterUrl: posterUrlFromShiki(a.image),
@@ -130,10 +141,13 @@ function rowToChronology(row: ShikiRelatedRow): ChronologyEntry | null {
   }
   if (row.manga?.id) {
     const m = row.manga;
+    const rawKind = m.kind != null && String(m.kind).trim() !== "" ? String(m.kind).trim() : null;
     return {
       id: `manga-${m.id}`,
       title: displayTitle({ russian: m.russian, name: m.name }),
       kindLabel: kindLabel(m.kind),
+      sourceKind: rawKind,
+      sourceType: "manga",
       year: yearFromShiki(m.aired_on, m.released_on),
       relation: rel || undefined,
       posterUrl: posterUrlFromShiki(m.image),

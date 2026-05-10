@@ -22,12 +22,17 @@ import { parseLaunchShikiId } from "./telegramWebApp";
 
 type DubbingOption = { id: string; name: string; range: string };
 
+/** Сезоны из search?with_episodes=true — у каждой серии своя ссылка /seria/… (без «продолжить с serial»). */
+type KodikSeasonsPayload = Record<string, { episodes?: Record<string, string> } | undefined>;
+
 type KodikSearchResult = {
   link?: string;
   translation?: { id?: number; title?: string; type?: string };
   title?: string;
   title_orig?: string;
   other_title?: string;
+  seasons?: KodikSeasonsPayload;
+  last_season?: number;
 };
 
 const LAST_SHIKI_ID_KEY = "suteki:player_easy:last_shiki_id:v1";
@@ -35,7 +40,13 @@ const LAST_SHIKI_SEARCH_KEY = "suteki:player_easy:last_shiki_search:v1";
 /** Локальный прогресс (серия + озвучка): Kodik iframe чужой origin — внутрь плеера не пишем, только наш ключ. */
 const kodikWatchKey = (shikiId: number) => `suteki:player_easy:kodik_watch:v1:${shikiId}`;
 
+/** Оверлей «Продолжить просмотр» (сезон/серия/время) — данные Kodik в браузере на их домене; REST API это не отдаёт. */
 const DEFAULT_KODIK_TOKEN = "56a768d08f43091901c44b54fe970049";
+
+/** Событие из плеера Kodik (parent.postMessage) при окончании основного видео, не рекламы. */
+const KODIK_POST_MESSAGE_VIDEO_ENDED = "kodik_player_video_ended";
+
+const KODIK_ENDED_DEBOUNCE_MS = 2800;
 
 /** Маркер: под плеером показываем CTA на Telegram вместо строки статуса. */
 const STATUS_TELEGRAM_CTA = "__suteki_telegram_cta__";
@@ -170,21 +181,42 @@ function absoluteKodikLink(raw: string): string {
   return s;
 }
 
-/** Ссылка iframe Kodik для выбранного перевода и серии (translationId null — первый результат с link). */
-function kodikIframeSrc(list: KodikSearchResult[], translationId: number | null, episode: number): string | null {
-  const pick =
-    translationId != null
-      ? list.find((r) => Number(r?.translation?.id) === translationId)
-      : list.find((r) => typeof r?.link === "string");
-  const baseRaw = pick && typeof pick.link === "string" ? pick.link.trim() : "";
-  if (!baseRaw) return null;
+function pickSeasonKeyForEpisodes(row: KodikSearchResult, seasons: KodikSeasonsPayload): string | null {
+  const keys = Object.keys(seasons).filter((k) => {
+    const eps = seasons[k]?.episodes;
+    return eps && typeof eps === "object" && Object.keys(eps).length > 0;
+  });
+  if (keys.length === 0) return null;
+  if (keys.length === 1) return keys[0];
+  const ls = row.last_season;
+  if (typeof ls === "number" && ls > 0) {
+    const sk = String(ls);
+    if (keys.includes(sk)) return sk;
+  }
+  return [...keys].sort((a, b) => Number(a) - Number(b))[0] ?? null;
+}
+
+/** Прямая ссылка на серию из ответа search?with_episodes=true (обходит оверлей «продолжить просмотр» на /serial/). */
+function seriaLinkFromKodikRow(row: KodikSearchResult, episode: number): string | null {
+  const seasons = row.seasons;
+  if (!seasons || typeof seasons !== "object") return null;
+  const sk = pickSeasonKeyForEpisodes(row, seasons);
+  if (!sk) return null;
+  const eps = seasons[sk]?.episodes;
+  if (!eps || typeof eps !== "object") return null;
+  const ep = Math.max(1, Math.floor(episode) || 1);
+  const link = eps[String(ep)];
+  return typeof link === "string" && link.trim() ? link.trim() : null;
+}
+
+/** Fallback: serial/video URL + episode в query (если with_episodes не вернул карту серий). */
+function kodikSerialIframeSrcFromLink(baseRaw: string, episode: number): string | null {
   const base = absoluteKodikLink(baseRaw);
   if (!base) return null;
   const ep = Math.max(1, Math.floor(episode) || 1);
   try {
     const out = new URL(base);
     out.hash = "";
-    /* Сбрасываем параметры, из‑за которых вшитая ссылка Kodik открывает не первую серию */
     const strip = [
       "episode",
       "Episode",
@@ -199,21 +231,80 @@ function kodikIframeSrc(list: KodikSearchResult[], translationId: number | null,
       "save_progress",
       "start_from",
       "_ts",
+      "autoplay",
     ];
     for (const k of strip) {
       out.searchParams.delete(k);
     }
     out.searchParams.set("episode", String(ep));
     out.searchParams.set("only_episode", "true");
+    out.searchParams.set("autoplay", "1");
     return out.toString();
   } catch {
-    return appendParams(base, { episode: String(ep), only_episode: "true" }) || base;
+    return (
+      appendParams(base, { episode: String(ep), only_episode: "true", autoplay: "1" }) || base
+    );
   }
+}
+
+function pickKodikResult(list: KodikSearchResult[], translationId: number | null): KodikSearchResult | null {
+  const pick =
+    translationId != null
+      ? list.find((r) => Number(r?.translation?.id) === translationId)
+      : list.find((r) => typeof r?.link === "string");
+  return pick ?? null;
+}
+
+/** Номера серий для карусели: из Kodik seasons или 1…N по Shikimori. */
+function episodeNumbersForCarousel(row: KodikSearchResult | null, shikiMax: number | null): number[] {
+  if (row?.seasons && typeof row.seasons === "object") {
+    const sk = pickSeasonKeyForEpisodes(row, row.seasons);
+    if (sk) {
+      const eps = row.seasons[sk]?.episodes;
+      if (eps && typeof eps === "object") {
+        const nums = Object.keys(eps)
+          .map((k) => Math.floor(Number(k)))
+          .filter((n) => Number.isFinite(n) && n >= 1);
+        nums.sort((a, b) => a - b);
+        if (nums.length > 0) return nums;
+      }
+    }
+  }
+  const max = shikiMax != null && shikiMax > 0 ? shikiMax : 0;
+  if (max > 0) return Array.from({ length: max }, (_, i) => i + 1);
+  return [];
+}
+
+function EpisodeCarouselChevron({ dir }: { dir: "prev" | "next" }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+      {dir === "prev" ? (
+        <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+      ) : (
+        <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+      )}
+    </svg>
+  );
+}
+
+/** Ссылка iframe: приоритет /seria/… из API, иначе старый способ по serial link. */
+function kodikIframeSrc(list: KodikSearchResult[], translationId: number | null, episode: number): string | null {
+  const pick = pickKodikResult(list, translationId);
+  if (!pick) return null;
+  const ep = Math.max(1, Math.floor(episode) || 1);
+  const seriaRaw = seriaLinkFromKodikRow(pick, ep);
+  if (seriaRaw) {
+    const out = absoluteKodikLink(seriaRaw);
+    return out || null;
+  }
+  const baseRaw = typeof pick.link === "string" ? pick.link.trim() : "";
+  if (!baseRaw) return null;
+  return kodikSerialIframeSrcFromLink(baseRaw, ep);
 }
 
 async function kodikSearchList(shikiId: number): Promise<KodikSearchResult[]> {
   const t = DEFAULT_KODIK_TOKEN;
-  const url = `https://kodik-api.com/search?token=${encodeURIComponent(t)}&shikimori_id=${encodeURIComponent(String(shikiId))}`;
+  const url = `https://kodik-api.com/search?token=${encodeURIComponent(t)}&shikimori_id=${encodeURIComponent(String(shikiId))}&with_episodes=true`;
   const r = await fetch(url, { method: "POST", headers: { Accept: "application/json" } });
   const j = (await r.json().catch(() => ({}))) as { results?: unknown; message?: unknown };
   if (!r.ok) {
@@ -316,6 +407,63 @@ export function PlayerPage() {
     },
     [episodeMaxCap],
   );
+
+  const pickedKodikRow = useMemo(
+    () =>
+      results.length > 0
+        ? pickKodikResult(results, typeof selectedTranslationId === "number" ? selectedTranslationId : null)
+        : null,
+    [results, selectedTranslationId],
+  );
+
+  const episodeCarouselNumbers = useMemo(
+    () => episodeNumbersForCarousel(pickedKodikRow, episodeMaxCap),
+    [pickedKodikRow, episodeMaxCap],
+  );
+
+  const epCarouselScrollRef = useRef<HTMLDivElement>(null);
+  const [epCarouselNav, setEpCarouselNav] = useState({ prev: false, next: true });
+
+  const updateEpCarouselNav = useCallback(() => {
+    const el = epCarouselScrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    if (max <= 4) {
+      setEpCarouselNav({ prev: false, next: false });
+      return;
+    }
+    setEpCarouselNav({
+      prev: el.scrollLeft > 4,
+      next: el.scrollLeft < max - 4,
+    });
+  }, []);
+
+  const scrollEpCarousel = useCallback((dir: -1 | 1) => {
+    const el = epCarouselScrollRef.current;
+    if (!el) return;
+    const step = Math.max(140, el.clientWidth * 0.55);
+    el.scrollBy({ left: dir * step, behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    const el = epCarouselScrollRef.current;
+    if (!el || episodeCarouselNumbers.length === 0) return;
+    updateEpCarouselNav();
+    const ro = new ResizeObserver(() => updateEpCarouselNav());
+    ro.observe(el);
+    el.addEventListener("scroll", updateEpCarouselNav, { passive: true });
+    return () => {
+      ro.disconnect();
+      el.removeEventListener("scroll", updateEpCarouselNav);
+    };
+  }, [episodeCarouselNumbers.length, updateEpCarouselNav]);
+
+  useLayoutEffect(() => {
+    const sc = epCarouselScrollRef.current;
+    if (!sc || episodeCarouselNumbers.length === 0) return;
+    const chip = sc.querySelector(`[data-ep-chip="${currentEpisode}"]`);
+    chip?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }, [currentEpisode, episodeCarouselNumbers.length]);
 
   useEffect(() => {
     setEpisodeDraft(String(currentEpisode));
@@ -480,6 +628,7 @@ export function PlayerPage() {
   );
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const lastKodikVideoEndedRef = useRef(0);
 
   useEffect(() => {
     if (results.length === 0) {
@@ -496,17 +645,38 @@ export function PlayerPage() {
     }
     try {
       const u = new URL(base);
+      u.searchParams.set("autoplay", "1");
       u.searchParams.set("_ts", String(Date.now()));
       const src = u.toString();
       setIframeSrc(src);
       setPlayingUrl(src);
     } catch {
       const join = base.includes("?") ? "&" : "?";
-      const src = `${base}${join}_ts=${Date.now()}`;
+      const src = `${base}${join}autoplay=1&_ts=${Date.now()}`;
       setIframeSrc(src);
       setPlayingUrl(src);
     }
   }, [results, selectedTranslationId, currentEpisode]);
+
+  useEffect(() => {
+    const onMessage = (ev: MessageEvent) => {
+      if (!iframeSrc) return;
+      const frame = iframeRef.current;
+      if (!frame || ev.source !== frame.contentWindow) return;
+      const data = ev.data as { key?: string } | null;
+      if (!data || typeof data !== "object" || data.key !== KODIK_POST_MESSAGE_VIDEO_ENDED) return;
+      const now = Date.now();
+      if (now - lastKodikVideoEndedRef.current < KODIK_ENDED_DEBOUNCE_MS) return;
+      lastKodikVideoEndedRef.current = now;
+      setCurrentEpisode((ep) => {
+        const max = episodeMaxCap ?? Number.MAX_SAFE_INTEGER;
+        if (ep >= max) return ep;
+        return Math.min(max, ep + 1);
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [iframeSrc, episodeMaxCap]);
 
   useLayoutEffect(() => {
     if (!iframeSrc) return;
@@ -734,47 +904,106 @@ export function PlayerPage() {
 
               {iframeSrc && results.length > 0 ? (
                 <div className="sh-episode-toolbar">
-                  <span className="sh-episode-toolbar__label" id="sh-episode-label">
-                    Серия
-                  </span>
-                  <div className="sh-episode-toolbar__controls" role="group" aria-labelledby="sh-episode-label">
-                    <button
-                      type="button"
-                      className="sh-episode-step"
-                      aria-label="Предыдущая серия"
-                      disabled={currentEpisode <= 1}
-                      onClick={() => bumpEpisode(-1)}
-                    >
-                      −
-                    </button>
-                    <input
-                      className="sh-episode-input"
-                      type="number"
-                      inputMode="numeric"
-                      min={1}
-                      max={episodeMaxCap ?? undefined}
-                      aria-label="Номер серии"
-                      value={episodeDraft}
-                      onChange={(e) => setEpisodeDraft(e.target.value)}
-                      onKeyDown={(e: ReactKeyboardEvent<HTMLInputElement>) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          goToEpisodeFromDraft();
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="sh-episode-step"
-                      aria-label="Следующая серия"
-                      disabled={episodeMaxCap != null && currentEpisode >= episodeMaxCap}
-                      onClick={() => bumpEpisode(1)}
-                    >
-                      +
-                    </button>
-                    <button type="button" className="sh-btn primary sh-episode-go" onClick={goToEpisodeFromDraft}>
-                      Перейти
-                    </button>
+                  <div className="sh-episode-toolbar__main">
+                    <div className="sh-episode-toolbar__meta">
+                      <span className="sh-episode-toolbar__label" id="sh-episode-label">
+                        Серия
+                      </span>
+                      <div className="sh-episode-toolbar__jump" role="group" aria-labelledby="sh-episode-label">
+                        <button
+                          type="button"
+                          className="sh-episode-step"
+                          aria-label="Предыдущая серия"
+                          disabled={currentEpisode <= 1}
+                          onClick={() => bumpEpisode(-1)}
+                        >
+                          −
+                        </button>
+                        <input
+                          className="sh-episode-input"
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          max={episodeMaxCap ?? undefined}
+                          aria-label="Номер серии"
+                          value={episodeDraft}
+                          onChange={(e) => setEpisodeDraft(e.target.value)}
+                          onKeyDown={(e: ReactKeyboardEvent<HTMLInputElement>) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              goToEpisodeFromDraft();
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="sh-episode-step"
+                          aria-label="Следующая серия"
+                          disabled={episodeMaxCap != null && currentEpisode >= episodeMaxCap}
+                          onClick={() => bumpEpisode(1)}
+                        >
+                          +
+                        </button>
+                        <button type="button" className="sh-btn primary sh-episode-go" onClick={goToEpisodeFromDraft}>
+                          Перейти
+                        </button>
+                      </div>
+                    </div>
+                    {episodeCarouselNumbers.length > 0 ? (
+                      <div className="sh-episode-carousel" role="group" aria-label="Список серий">
+                        <button
+                          type="button"
+                          className={`sh-episode-carousel__nav${epCarouselNav.prev ? "" : " is-disabled"}`}
+                          onClick={() => scrollEpCarousel(-1)}
+                          disabled={!epCarouselNav.prev}
+                          aria-label="Прокрутить список серий назад"
+                        >
+                          <EpisodeCarouselChevron dir="prev" />
+                        </button>
+                        <div
+                          className="sh-episode-carousel__scroll"
+                          ref={epCarouselScrollRef}
+                          tabIndex={0}
+                          role="listbox"
+                          aria-label="Выбор серии"
+                          onKeyDown={(e: ReactKeyboardEvent<HTMLDivElement>) => {
+                            if (e.key === "ArrowLeft") {
+                              e.preventDefault();
+                              if (epCarouselNav.prev) scrollEpCarousel(-1);
+                            } else if (e.key === "ArrowRight") {
+                              e.preventDefault();
+                              if (epCarouselNav.next) scrollEpCarousel(1);
+                            }
+                          }}
+                        >
+                          <ul className="sh-episode-carousel__track" role="none">
+                            {episodeCarouselNumbers.map((n) => (
+                              <li key={n} className="sh-episode-carousel__item" role="none">
+                                <button
+                                  type="button"
+                                  role="option"
+                                  aria-selected={n === currentEpisode}
+                                  data-ep-chip={n}
+                                  className={`sh-episode-chip${n === currentEpisode ? " is-active" : ""}`}
+                                  onClick={() => setCurrentEpisode(clampEpisodeValue(n))}
+                                >
+                                  {n}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                        <button
+                          type="button"
+                          className={`sh-episode-carousel__nav${epCarouselNav.next ? "" : " is-disabled"}`}
+                          onClick={() => scrollEpCarousel(1)}
+                          disabled={!epCarouselNav.next}
+                          aria-label="Прокрутить список серий вперёд"
+                        >
+                          <EpisodeCarouselChevron dir="next" />
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

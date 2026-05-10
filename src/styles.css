@@ -556,41 +556,183 @@ iframe:not(.sh-kodik-embed) {
 }
 
 .sh-episode-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: clamp(8px, 1.8vw, 10px);
-  padding: clamp(8px, 2vw, 10px) clamp(12px, 2.5vw, 16px);
+  --sh-ep-row: 40px;
+  padding: 10px clamp(12px, 2.5vw, 16px);
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.28);
 }
 
+.sh-episode-toolbar__main {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.sh-episode-toolbar__meta {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
 .sh-episode-toolbar__label {
   flex: 0 0 auto;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--sh-ep-row);
   font-size: clamp(0.6875rem, 0.62rem + 0.35vw, 0.75rem);
   font-weight: 700;
   color: var(--sh-muted);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.sh-episode-toolbar__controls {
+.sh-episode-toolbar__jump {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
+}
+
+.sh-episode-carousel {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding-left: 12px;
+  margin-left: 4px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sh-episode-carousel__nav {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--sh-ep-row);
+  min-width: var(--sh-ep-row);
+  height: var(--sh-ep-row);
+  min-height: var(--sh-ep-row);
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.4);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+}
+
+.sh-episode-carousel__nav:hover:not(:disabled):not(.is-disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sh-episode-carousel__nav:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-episode-carousel__nav.is-disabled,
+.sh-episode-carousel__nav:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.sh-episode-carousel__scroll {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: var(--sh-ep-row);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  outline: none;
+}
+
+.sh-episode-carousel__scroll:focus-visible {
+  box-shadow: var(--sh-focus-ring);
+  border-radius: 10px;
+}
+
+.sh-episode-carousel__track {
+  list-style: none;
+  margin: 0;
+  padding: 0 2px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 6px;
+  align-items: center;
+  width: max-content;
+}
+
+.sh-episode-carousel__item {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  scroll-snap-align: start;
+}
+
+.sh-episode-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: var(--sh-ep-row);
+  min-height: var(--sh-ep-row);
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--sh-text);
+  font: inherit;
+  font-size: clamp(0.75rem, 0.7rem + 0.2vw, 0.8125rem);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.sh-episode-chip:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sh-episode-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--sh-focus-ring);
+}
+
+.sh-episode-chip.is-active {
+  border-color: rgba(124, 92, 255, 0.65);
+  background: rgba(124, 92, 255, 0.2);
+  color: rgba(255, 255, 255, 0.96);
 }
 
 .sh-episode-step {
   flex: 0 0 auto;
-  width: var(--sh-tap-min);
-  min-width: var(--sh-tap-min);
-  height: var(--sh-tap-min);
-  min-height: var(--sh-tap-min);
+  box-sizing: border-box;
+  width: var(--sh-ep-row);
+  min-width: var(--sh-ep-row);
+  height: var(--sh-ep-row);
+  min-height: var(--sh-ep-row);
   padding: 0;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(0, 0, 0, 0.35);
   color: var(--sh-text);
@@ -615,12 +757,14 @@ iframe:not(.sh-kodik-embed) {
 }
 
 .sh-episode-input {
-  flex: 1 1 72px;
-  min-width: 0;
-  max-width: 120px;
-  height: var(--sh-tap-min);
-  min-height: var(--sh-tap-min);
-  border-radius: 12px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 3.5rem;
+  min-width: 3.5rem;
+  max-width: 4.5rem;
+  height: var(--sh-ep-row);
+  min-height: var(--sh-ep-row);
+  border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(0, 0, 0, 0.25);
   color: var(--sh-text);
@@ -639,9 +783,18 @@ iframe:not(.sh-kodik-embed) {
   opacity: 0.55;
 }
 
-.sh-episode-go {
-  flex: 0 1 auto;
-  min-width: min(100%, 100px);
+.sh-episode-toolbar .sh-episode-go {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: var(--sh-ep-row);
+  min-height: var(--sh-ep-row);
+  max-height: var(--sh-ep-row);
+  padding: 0 14px;
+  white-space: nowrap;
+  max-width: none;
+  min-width: 0;
+  line-height: 1.2;
+  font-size: clamp(0.75rem, 0.7rem + 0.2vw, 0.8125rem);
 }
 
 .sh-hud-top {
@@ -1045,7 +1198,7 @@ iframe:not(.sh-kodik-embed) {
   color: var(--sh-muted);
 }
 
-/* ——— Хронология: горизонтальная карусель ——— */
+/* ——— Хронология: две отдельные карточки (TV и прочее), шапка sh-watch-head ——— */
 
 .sh-chrono-carousel {
   display: flex;
@@ -1192,8 +1345,38 @@ iframe:not(.sh-kodik-embed) {
   box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.22);
 }
 
+/* Узкая ширина: карусель серий на отдельной строке — иначе flex сжимает скролл до ~0 */
+@media (max-width: 720px) {
+  .sh-episode-toolbar__main {
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 10px;
+    column-gap: 10px;
+    overflow-x: visible;
+  }
+
+  .sh-episode-carousel {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding-top: 10px;
+    box-sizing: border-box;
+  }
+
+  .sh-episode-carousel__scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .sh-chrono-scroll {
+  .sh-chrono-scroll,
+  .sh-episode-carousel__scroll {
     scroll-behavior: auto;
   }
 }
