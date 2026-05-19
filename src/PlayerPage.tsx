@@ -18,6 +18,7 @@ import {
   kindLabel,
   searchAnimes,
 } from "./shikimoriApi";
+import { apiUrl } from "./apiBase";
 import { parseLaunchShikiId } from "./telegramWebApp";
 
 type DubbingOption = { id: string; name: string; range: string };
@@ -39,9 +40,6 @@ const LAST_SHIKI_ID_KEY = "suteki:player_easy:last_shiki_id:v1";
 const LAST_SHIKI_SEARCH_KEY = "suteki:player_easy:last_shiki_search:v1";
 /** Локальный прогресс (серия + озвучка): Kodik iframe чужой origin — внутрь плеера не пишем, только наш ключ. */
 const kodikWatchKey = (shikiId: number) => `suteki:player_easy:kodik_watch:v1:${shikiId}`;
-
-/** Оверлей «Продолжить просмотр» (сезон/серия/время) — данные Kodik в браузере на их домене; REST API это не отдаёт. */
-const DEFAULT_KODIK_TOKEN = "56a768d08f43091901c44b54fe970049";
 
 /** Событие из плеера Kodik (parent.postMessage) при окончании основного видео, не рекламы. */
 const KODIK_POST_MESSAGE_VIDEO_ENDED = "kodik_player_video_ended";
@@ -303,13 +301,12 @@ function kodikIframeSrc(list: KodikSearchResult[], translationId: number | null,
 }
 
 async function kodikSearchList(shikiId: number): Promise<KodikSearchResult[]> {
-  const t = DEFAULT_KODIK_TOKEN;
-  const url = `https://kodik-api.com/search?token=${encodeURIComponent(t)}&shikimori_id=${encodeURIComponent(String(shikiId))}&with_episodes=true`;
-  const r = await fetch(url, { method: "POST", headers: { Accept: "application/json" } });
-  const j = (await r.json().catch(() => ({}))) as { results?: unknown; message?: unknown };
+  const url = apiUrl(`/kodik/search?shikimori_id=${encodeURIComponent(String(shikiId))}`);
+  const r = await fetch(url, { headers: { Accept: "application/json" } });
+  const j = (await r.json().catch(() => ({}))) as { results?: unknown; detail?: unknown; message?: unknown };
   if (!r.ok) {
-    const msg = typeof j?.message === "string" ? j.message : `HTTP ${r.status}`;
-    throw new Error(msg);
+    const detail = typeof j?.detail === "string" ? j.detail : typeof j?.message === "string" ? j.message : `HTTP ${r.status}`;
+    throw new Error(detail);
   }
   return Array.isArray(j?.results) ? (j.results as KodikSearchResult[]) : [];
 }

@@ -1,11 +1,8 @@
-/** Клиент Shikimori REST API v1 (без бэкенда). Требуется User-Agent. */
+/** Shikimori через Sutekihub API (токен Kodik и лимиты — на сервере). */
+
+import { apiUrl } from "./apiBase";
 
 export const SHIKIMORI_ORIGIN = "https://shikimori.one";
-
-const HEADERS: HeadersInit = {
-  Accept: "application/json",
-  "User-Agent": "SutekiPlayerEasy/0.1 (education; +https://shikimori.one/)",
-};
 
 export type ShikiImage = {
   original?: string;
@@ -107,8 +104,8 @@ export function episodeTotalFromShiki(a: Pick<ShikiAnimeBrief, "episodes" | "epi
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const r = await fetch(`${SHIKIMORI_ORIGIN}${path}`, { headers: HEADERS });
-  if (!r.ok) throw new Error(`Shikimori ${r.status}`);
+  const r = await fetch(apiUrl(path), { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(`API ${r.status}`);
   return r.json() as Promise<T>;
 }
 
@@ -116,11 +113,13 @@ export function searchAnimes(query: string, limit = 20): Promise<ShikiAnimeBrief
   const q = String(query || "").trim();
   if (!q) return Promise.resolve([]);
   const lim = Math.min(50, Math.max(1, limit));
-  return getJson<ShikiAnimeBrief[]>(`/api/animes?search=${encodeURIComponent(q)}&limit=${lim}`);
+  return getJson<ShikiAnimeBrief[]>(
+    `/animes/search?q=${encodeURIComponent(q)}&limit=${lim}`,
+  );
 }
 
 export function fetchAnimeById(id: number): Promise<ShikiAnimeBrief> {
-  return getJson<ShikiAnimeBrief>(`/api/animes/${encodeURIComponent(String(id))}`);
+  return getJson<ShikiAnimeBrief>(`/animes/${encodeURIComponent(String(id))}`);
 }
 
 function rowToChronology(row: ShikiRelatedRow): ChronologyEntry | null {
@@ -157,7 +156,9 @@ function rowToChronology(row: ShikiRelatedRow): ChronologyEntry | null {
 }
 
 export async function fetchChronology(animeId: number): Promise<ChronologyEntry[]> {
-  const rows = await getJson<ShikiRelatedRow[]>(`/api/animes/${encodeURIComponent(String(animeId))}/related`);
+  const rows = await getJson<ShikiRelatedRow[]>(
+    `/animes/${encodeURIComponent(String(animeId))}/related`,
+  );
   if (!Array.isArray(rows)) return [];
   const out: ChronologyEntry[] = [];
   const seen = new Set<string>();
