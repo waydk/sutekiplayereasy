@@ -31,12 +31,14 @@ export async function initApiBase(): Promise<void> {
 }
 
 export function apiUrl(path: string): string {
-  const apiBase = getApiBase();
   const p = path.startsWith("/") ? path : `/${path}`;
-  if (!apiBase) {
-    return `/api/v1${p.startsWith("/playereasy") ? p : `/playereasy${p}`}`;
-  }
-  if (p.startsWith("/api/v1")) return `${apiBase.replace(/\/api\/v1$/, "")}${p}`;
-  if (p.startsWith("/playereasy")) return `${apiBase}${p}`;
-  return `${apiBase}/playereasy${p}`;
+  const hubPath = p.startsWith("/api/v1")
+    ? p
+    : p.startsWith("/playereasy") || p.startsWith("/anime/") || p.startsWith("/media/")
+      ? `/api/v1${p}`
+      : `/api/v1/playereasy${p}`;
+  const base = getApiBase().replace(/\/+$/, "");
+  if (!base) return hubPath;
+  const origin = base.endsWith("/api/v1") ? base.slice(0, -"/api/v1".length) : base.replace(/\/api\/v1$/, "");
+  return `${origin.replace(/\/$/, "")}${hubPath}`;
 }

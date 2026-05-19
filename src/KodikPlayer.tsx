@@ -8,6 +8,7 @@ import { shouldShowDebugPanel } from "./lib/showDebug";
 import {
   availableQualities,
   buildEpisodesOptions,
+  buildKodikEmbedWatchUrl,
   buildKodikEpisodesPayloadFromWatch,
   formatTranslationLabel,
   inferQualityFromUrl,
@@ -28,6 +29,7 @@ import {
   seekVideoToSec,
   type KodikSkipMarkers,
 } from "./lib/kodikSkip";
+import { hubApiUrl, playerBootstrapUrl, type PlayerBootstrapResponse } from "./lib/playerApi";
 
 type WatchPayload = {
   /** URL страницы плеера Kodik с `/watch` — для preconnect и сборки kodik_embed_url на бэкенде. */
@@ -236,7 +238,7 @@ export function KodikPlayer() {
   const parsedEp =
     qpEp && !Number.isNaN(Number(qpEp)) && Number(qpEp) > 0 ? Math.floor(Number(qpEp)) : 1;
 
-  const defaultQ = searchParams.get("q") || "наруто";
+  const defaultQ = searchParams.get("q") || "";
 
   const [query, setQuery] = useState(defaultQ);
   const [animeId, setAnimeId] = useState<number | null>(parsedAnimeId);
@@ -356,8 +358,15 @@ export function KodikPlayer() {
     [showDebug],
   );
 
+  const resolveApiUrl = useCallback((pathOrUrl: string) => {
+    if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) return pathOrUrl;
+    if (pathOrUrl.startsWith("/api/v1")) return hubApiUrl(pathOrUrl.slice("/api/v1".length) || "/");
+    return hubApiUrl(pathOrUrl);
+  }, []);
+
   const apiJson = useCallback(
-    async (url: string) => {
+    async (pathOrUrl: string) => {
+      const url = resolveApiUrl(pathOrUrl);
       setEndpoint(url);
       const r = await fetch(url, { headers: { Accept: "application/json" } });
       const j = await r.json().catch(() => ({}));
@@ -376,14 +385,17 @@ export function KodikPlayer() {
       }
       return j;
     },
-    [applyDebug, showDebug],
+    [applyDebug, resolveApiUrl, showDebug],
   );
 
   useEffect(() => {
+    if (!useNativePlayer) return;
     let cancelled = false;
-    (async () => {
+    void (async () => {
+      await import("plyr/dist/plyr.css");
       const mod = await import("plyr");
       if (cancelled || !videoRef.current) return;
+      if (plyrRef.current) return;
       plyrRef.current = new mod.default(videoRef.current, {
         controls: [
           "play-large",
@@ -402,6 +414,11 @@ export function KodikPlayer() {
     })();
     return () => {
       cancelled = true;
+    };
+  }, [useNativePlayer]);
+
+  useEffect(() => {
+    return () => {
       try {
         hlsRef.current?.destroy();
       } catch {
@@ -436,59 +453,86 @@ export function KodikPlayer() {
     [apiJson, setStatus],
   );
 
-  /** Загрузка watch + episodes. preferredTid: эта озвучка или первая из ответа. Возвращает translation_id при успехе. */
+  const applyBootstrapWatch = useCallback(
+    (w: WatchPayload): string | null => {
+      setWatch(w);
+      if (w?.unavailable_reason === "geo") {
+        setStatus("Kodik geo-блокирован для этого тайтла в текущей сети/регионе.", { error: true });
+        setGeoBlocked(true);
+        return null;
+      }
+      if (w?.unavailable_reason === "not_configured" || w?.unavailable_reason === "init") {
+        setGeoBlocked(false);
+        const hint =
+          typeof w.message === "string" && w.message.trim()
+            ? w.message.trim()
+            : "Kodik не подключён к этому серверу: озвучки и видео недоступны. Откройте каталог на главной — поиск через Shikimori работает без Kodik.";
+        setStatus(hint, { error: false });
+        setTranslationId(null);
+        setEpisodes(null);
+        return null;
+      }
+      setGeoBlocked(false);
+      return pickFirstTranslationId(w);
+    },
+    [setStatus],
+  );
+
+  const applyBootstrapData = useCallback(
+    (data: PlayerBootstrapResponse, preferredTid: string | null, ep: number): string | null => {
+      const w = data.watch as WatchPayload;
+      const title = typeof data.page_title === "string" ? data.page_title.trim() : "";
+      if (title) setAnimeTitle(title);
+      let tid =
+        (typeof data.translation_id === "string" && data.translation_id.trim()) ||
+        applyBootstrapWatch(w);
+      if (!tid) return null;
+      const ids = new Set(
+        (w.translations || []).filter((t) => translationRowHasId(t)).map((t) => translationRowIdString(t)),
+      );
+      tid = preferredTid && ids.has(preferredTid) ? preferredTid : tid;
+      setTranslationId(tid);
+      setEpisode(ep);
+      if (data.episodes && typeof data.episodes === "object") {
+        setEpisodes(data.episodes as EpisodesPayload);
+      } else if (translationHasSeriesRangeForTranslationId(w, tid)) {
+        setEpisodes(buildKodikEpisodesPayloadFromWatch(w, tid, 12));
+      }
+      return tid;
+    },
+    [applyBootstrapWatch],
+  );
+
+  const fetchKodikLinkQuiet = useCallback(
+    async (id: number, tid: string, ep: number): Promise<KodikLinkResponse | null> => {
+      try {
+        return (await apiJson(
+          `/api/v1/anime/${encodeURIComponent(id)}/kodik/link?episode=${encodeURIComponent(ep)}&translation_id=${encodeURIComponent(tid)}`,
+        )) as KodikLinkResponse;
+      } catch {
+        return null;
+      }
+    },
+    [apiJson],
+  );
+
+  /** Один быстрый запрос bootstrap (без /kodik/link). */
   const bootstrapAnime = useCallback(
-    async (id: number, preferredTid: string | null): Promise<string | null> => {
+    async (id: number, preferredTid: string | null, ep = 1): Promise<string | null> => {
       setLoadingBootstrap(true);
       setBusy(true);
       setGeoBlocked(false);
       try {
-        ensureHlsPreloaded();
-        setStatus("получаю /watch (translations)…");
-        const w = (await apiJson(
-          `/api/v1/anime/${encodeURIComponent(id)}/watch?player=kodik`,
-        )) as WatchPayload;
-        setWatch(w);
-
-        if (w?.unavailable_reason === "geo") {
-          setStatus("Kodik geo-блокирован для этого тайтла в текущей сети/регионе.", { error: true });
-          setGeoBlocked(true);
-          return null;
-        }
-
-        if (w?.unavailable_reason === "not_configured" || w?.unavailable_reason === "init") {
-          setGeoBlocked(false);
-          const hint =
-            typeof w.message === "string" && w.message.trim()
-              ? w.message.trim()
-              : "Kodik не подключён к этому серверу: озвучки и видео недоступны. Откройте каталог на главной — поиск через Shikimori работает без Kodik.";
-          setStatus(hint, { error: false });
-          setTranslationId(null);
-          setEpisodes(null);
-          return null;
-        }
-
-        const ids = new Set((w.translations || []).filter((t) => translationRowHasId(t)).map((t) => translationRowIdString(t)));
-        const tid =
-          preferredTid && ids.has(preferredTid) ? preferredTid : pickFirstTranslationId(w);
-        setTranslationId(tid);
-        if (!tid) {
-          const apiHint =
-            typeof w.message === "string" && w.message.trim() ? ` ${w.message.trim()}` : "";
-          setStatus(
-            `Не нашёл озвучки в ответе /watch.${apiHint || " Возможно, Kodik недоступен для этого тайтла."}`,
-            { error: true },
-          );
-          return null;
-        }
-
-        if (translationHasSeriesRangeForTranslationId(w, tid)) {
-          setStatus("строю список серий из /watch…");
-          setEpisodes(buildKodikEpisodesPayloadFromWatch(w, tid, 12));
-        } else {
-          await loadEpisodes(id, tid);
-        }
-        setEpisode((e) => (Number.isFinite(e) && e > 0 ? e : 1));
+        setStatus("загрузка…");
+        const data = (await apiJson(
+          playerBootstrapUrl(id, {
+            translationId: preferredTid,
+            episode: ep,
+            includeLink: false,
+          }),
+        )) as PlayerBootstrapResponse;
+        const tid = applyBootstrapData(data, preferredTid, ep);
+        if (!tid) return null;
         setStatus("готово: озвучки и серии загружены.");
         return tid;
       } catch (e) {
@@ -500,7 +544,7 @@ export function KodikPlayer() {
         setBusy(false);
       }
     },
-    [apiJson, ensureHlsPreloaded, loadEpisodes, setStatus],
+    [apiJson, applyBootstrapData, setStatus],
   );
 
   const destroyHls = useCallback(() => {
@@ -524,21 +568,75 @@ export function KodikPlayer() {
     setSelectedQuality(current);
   }, []);
 
+  const tryFastKodikIframe = useCallback(
+    (w: WatchPayload | null, tid: string, ep: number): boolean => {
+      if (useNativePlayer) return false;
+      const base = w && typeof w.player_url === "string" ? w.player_url.trim() : "";
+      if (!base) return false;
+      const embedUrl = buildKodikEmbedWatchUrl(base, ep, tid);
+      if (!embedUrl) return false;
+      destroyHls();
+      setEmbedSrc(embedUrl);
+      setEmbedAvailable(true);
+      setHlsMode(false);
+      setHlsNativeQualityLock(false);
+      setVideoErr(null);
+      try {
+        videoRef.current?.pause();
+      } catch {
+        /* */
+      }
+      setStatus("готово (плеер Kodik).");
+      return true;
+    },
+    [destroyHls, setStatus, useNativePlayer],
+  );
+
+  const enrichFromKodikLink = useCallback((link: KodikLinkResponse) => {
+    setSkipMarkers(pickSkipMarkersFromKodikLink(link));
+    const mp4 = typeof link.player_url === "string" ? link.player_url.trim() : "";
+    if (mp4) setRawMp4(mp4);
+    const emb = typeof link.kodik_embed_url === "string" ? link.kodik_embed_url.trim() : "";
+    if (emb) setEmbedSrc(emb);
+  }, []);
+
   const playStream = useCallback(
-    async (opts: { animeId: number; translationId: string; episode: number; resumeAfterLoadSec?: number | null }) => {
-      const { animeId: id, translationId: tid, episode: ep, resumeAfterLoadSec } = opts;
+    async (opts: {
+      animeId: number;
+      translationId: string;
+      episode: number;
+      resumeAfterLoadSec?: number | null;
+      preloaded?: KodikLinkResponse | null;
+    }) => {
+      const { animeId: id, translationId: tid, episode: ep, resumeAfterLoadSec, preloaded } = opts;
       const resumeSec =
         resumeAfterLoadSec != null && Number.isFinite(resumeAfterLoadSec) && resumeAfterLoadSec > 0.25
           ? resumeAfterLoadSec
           : null;
-      ensureHlsPreloaded();
       setVideoErr(null);
       setBusy(true);
       try {
-        setStatus("запрашиваю /kodik/link…");
-        const out = (await apiJson(
-          `/api/v1/anime/${encodeURIComponent(id)}/kodik/link?episode=${encodeURIComponent(ep)}&translation_id=${encodeURIComponent(tid)}`,
-        )) as KodikLinkResponse;
+        if (!preloaded && !useNativePlayer && watch && tryFastKodikIframe(watch, tid, ep)) {
+          setBusy(false);
+          void fetchKodikLinkQuiet(id, tid, ep).then((link) => {
+            if (link) enrichFromKodikLink(link);
+          });
+          return;
+        }
+
+        const out =
+          preloaded ??
+          ((await (async () => {
+            setStatus("запрашиваю /kodik/link…");
+            return apiJson(
+              `/api/v1/anime/${encodeURIComponent(id)}/kodik/link?episode=${encodeURIComponent(ep)}&translation_id=${encodeURIComponent(tid)}`,
+            );
+          })()) as KodikLinkResponse);
+
+        const needsNativeLibs = useNativePlayer || !(
+          typeof out.kodik_embed_url === "string" && out.kodik_embed_url.trim()
+        );
+        if (needsNativeLibs) void ensureHlsPreloaded();
 
         setSkipMarkers(pickSkipMarkersFromKodikLink(out));
 
@@ -717,7 +815,71 @@ export function KodikPlayer() {
         setBusy(false);
       }
     },
-    [apiJson, destroyHls, ensureHlsPreloaded, setStatus, setupQualityFromLink, useNativePlayer],
+    [
+      apiJson,
+      destroyHls,
+      enrichFromKodikLink,
+      ensureHlsPreloaded,
+      fetchKodikLinkQuiet,
+      setStatus,
+      setupQualityFromLink,
+      tryFastKodikIframe,
+      useNativePlayer,
+      watch,
+    ],
+  );
+
+  const loadAnimeAndPlay = useCallback(
+    async (id: number, preferredTid: string | null, ep: number): Promise<string | null> => {
+      setLoadingBootstrap(true);
+      setBusy(true);
+      setGeoBlocked(false);
+      setAnimeId(id);
+      try {
+        setStatus("загрузка…");
+        const data = (await apiJson(
+          playerBootstrapUrl(id, {
+            translationId: preferredTid,
+            episode: ep,
+            includeLink: false,
+          }),
+        )) as PlayerBootstrapResponse;
+        const w = data.watch as WatchPayload;
+        const tid = applyBootstrapData(data, preferredTid, ep);
+        if (!tid) return null;
+
+        if (tryFastKodikIframe(w, tid, ep)) {
+          void fetchKodikLinkQuiet(id, tid, ep).then((link) => {
+            if (link) enrichFromKodikLink(link);
+          });
+          return tid;
+        }
+
+        const link = await fetchKodikLinkQuiet(id, tid, ep);
+        if (link?.player_url) {
+          await playStream({ animeId: id, translationId: tid, episode: ep, preloaded: link });
+        } else {
+          setStatus("Видео недоступно для этой серии.", { error: true });
+        }
+        return tid;
+      } catch (e) {
+        console.error(e);
+        setStatus(`Ошибка загрузки: ${String(e instanceof Error ? e.message : e)}`, { error: true });
+        return null;
+      } finally {
+        setLoadingBootstrap(false);
+        setBusy(false);
+      }
+    },
+    [
+      apiJson,
+      applyBootstrapData,
+      enrichFromKodikLink,
+      fetchKodikLinkQuiet,
+      playStream,
+      setStatus,
+      tryFastKodikIframe,
+    ],
   );
 
   const playSelected = useCallback(
@@ -742,23 +904,11 @@ export function KodikPlayer() {
 
   useEffect(() => {
     if (!parsedAnimeId) return;
-    void (async () => {
-      try {
-        setStatus("загрузка по ссылке…");
-        const tid = await bootstrapAnime(parsedAnimeId, qpTid ? String(qpTid) : null);
-        if (tid) {
-          await playStream({
-            animeId: parsedAnimeId,
-            translationId: tid,
-            episode: parsedEp,
-          });
-        }
-      } catch (e) {
-        console.error(e);
-        setStatus(`Ошибка по ссылке: ${String(e instanceof Error ? e.message : e)}`, { error: true });
-      }
-    })();
-  }, [parsedAnimeId, qpTid, parsedEp, bootstrapAnime, playStream, setStatus]);
+    void loadAnimeAndPlay(parsedAnimeId, qpTid ? String(qpTid) : null, parsedEp).catch((e) => {
+      console.error(e);
+      setStatus(`Ошибка по ссылке: ${String(e instanceof Error ? e.message : e)}`, { error: true });
+    });
+  }, [parsedAnimeId, qpTid, parsedEp, loadAnimeAndPlay, setStatus]);
 
   const selectTranslation = useCallback(
     (tid: string) => {
@@ -1059,14 +1209,9 @@ export function KodikPlayer() {
       setBusy(true);
       setVideoErr(null);
       try {
-        setAnimeId(newId);
         setAnimeTitle(row.title || "");
         setTranslationId(null);
-        setEpisode(1);
-        const tid = await bootstrapAnime(newId, null);
-        if (tid) {
-          await playStream({ animeId: newId, translationId: tid, episode: 1 });
-        }
+        await loadAnimeAndPlay(newId, null, 1);
       } catch (e) {
         console.error(e);
         setVideoErr(String(e instanceof Error ? e.message : e));
@@ -1074,7 +1219,7 @@ export function KodikPlayer() {
         setBusy(false);
       }
     },
-    [bootstrapAnime, playStream],
+    [loadAnimeAndPlay],
   );
 
   useEffect(() => {
@@ -1196,14 +1341,9 @@ export function KodikPlayer() {
       setBusy(true);
       try {
         setStatus(`открываю «${row.title || `#${newId}`}»…`);
-        setAnimeId(newId);
         setAnimeTitle(row.title || "");
         setTranslationId(null);
-        setEpisode(1);
-        const tid = await bootstrapAnime(newId, null);
-        if (tid) {
-          await playStream({ animeId: newId, translationId: tid, episode: 1 });
-        }
+        await loadAnimeAndPlay(newId, null, 1);
       } catch (e) {
         console.error(e);
         setStatus(`Не удалось открыть: ${String(e instanceof Error ? e.message : e)}`, { error: true });
@@ -1211,7 +1351,7 @@ export function KodikPlayer() {
         setBusy(false);
       }
     },
-    [bootstrapAnime, playStream, setStatus],
+    [loadAnimeAndPlay, setStatus],
   );
 
   const navOpts = useMemo(() => episodeOptions.filter((x) => !x.disabled), [episodeOptions]);
@@ -1499,8 +1639,8 @@ export function KodikPlayer() {
                       type="button"
                       className="sh-btn"
                       onClick={async () => {
-                        for (const s of MY_LIST_SEED) {
-                          const r = await resolveMyListItem(s.titleRu);
+                        const resolved = await Promise.all(MY_LIST_SEED.map((s) => resolveMyListItem(s.titleRu)));
+                        for (const r of resolved) {
                           if (r) addMyListItem(r);
                         }
                       }}

@@ -1,7 +1,11 @@
-/** HTTPS edge → HTTP VPS (бэкенд без TLS). */
-export const config = { runtime: "edge" };
+/** Прокси /api/v1/* → VPS (Edge не принимает голый IP — BACKEND_ORIGIN через sslip.io). */
+export const config = {
+  matcher: "/api/v1/:path*",
+};
 
-const BACKEND = (process.env.BACKEND_ORIGIN ?? "http://103.74.92.49:8765").replace(/\/+$/, "");
+const BACKEND = (
+  process.env.BACKEND_ORIGIN ?? "http://103-74-92-49.sslip.io:8765"
+).replace(/\/+$/, "");
 
 function corsHeaders(origin: string | null): Record<string, string> {
   const o =
@@ -30,7 +34,7 @@ function forwardHeaders(incoming: Headers): Headers {
   return out;
 }
 
-export default async function handler(request: Request): Promise<Response> {
+export default async function middleware(request: Request): Promise<Response> {
   const origin = request.headers.get("origin");
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(origin) });

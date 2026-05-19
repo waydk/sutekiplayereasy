@@ -4,7 +4,6 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/api/v1/(.*)", "destination": "/api/v1/$1" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

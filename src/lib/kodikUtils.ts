@@ -147,6 +147,26 @@ export function buildKodikEpisodesPayloadFromWatch(
   };
 }
 
+/** Быстрый iframe без GET /kodik/link — как build_kodik_embed_watch_url на бэкенде. */
+export function buildKodikEmbedWatchUrl(
+  embedBase: string,
+  episode: number,
+  translationId: string,
+): string {
+  const base = (embedBase || "").trim();
+  if (!base) return "";
+  try {
+    const u = new URL(base);
+    u.searchParams.set("episode", String(Math.max(1, Math.floor(episode) || 1)));
+    const tid = String(translationId || "").trim();
+    if (tid) u.searchParams.set("translation_id", tid);
+    if (!u.searchParams.has("only_episode")) u.searchParams.set("only_episode", "true");
+    return u.toString();
+  } catch {
+    return "";
+  }
+}
+
 export function buildEpisodesOptions(episodesPayload: {
   seasons?: { season?: number; episodes?: { episode?: number; available?: boolean }[] }[];
 } | null): EpisodeOpt[] {

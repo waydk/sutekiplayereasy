@@ -11,6 +11,17 @@ function appBase(): string {
 export default defineConfig({
   plugins: [react()],
   base: appBase(),
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/react-dom") || id.includes("node_modules/react/")) return "react-vendor";
+          if (id.includes("node_modules/hls.js")) return "hls";
+          if (id.includes("node_modules/plyr")) return "plyr";
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       "/api/v1": {
