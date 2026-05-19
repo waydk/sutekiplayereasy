@@ -10,6 +10,13 @@ export function getApiBase(): string {
 
 /** Загрузить /runtime-config.json (можно обновить без пересборки). */
 export async function initApiBase(): Promise<void> {
+  if (typeof window !== "undefined" && !BUILD_BASE) {
+    const host = window.location.hostname;
+    if (host.endsWith(".vercel.app") || host === "localhost" || host === "127.0.0.1") {
+      resolvedBase = `${window.location.origin}/api/v1`;
+      return;
+    }
+  }
   const base = import.meta.env.BASE_URL || "/";
   const cfgUrl = `${base.replace(/\/?$/, "/")}runtime-config.json`.replace(/\/+/g, "/");
   try {
