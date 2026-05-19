@@ -179,10 +179,11 @@ const HLS_VOD_OPTIONS = {
   lowLatencyMode: false,
   startFragPrefetch: true,
   capLevelToPlayerSize: true,
-  maxBufferLength: 50,
-  maxMaxBufferLength: 120,
-  backBufferLength: 40,
-  abrEwmaDefaultEstimate: 1_000_000,
+  maxBufferLength: 28,
+  maxMaxBufferLength: 72,
+  backBufferLength: 24,
+  abrEwmaDefaultEstimate: 2_800_000,
+  startLevel: -1,
 } as const;
 
 /** Best-effort height for HLS variant label when manifest omits `height`. */
@@ -268,8 +269,8 @@ export function KodikPlayer() {
   const [searchResults, setSearchResults] = useState<MyListResolved[]>([]);
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [searchDone, setSearchDone] = useState(false);
-  /** false = встроенный плеер Kodik (iframe, прямой CDN); true = Plyr+hls.js через наш прокси. */
-  const [useNativePlayer, setUseNativePlayer] = useState(false);
+  /** true = Plyr+hls.js (по умолчанию); false = iframe Kodik. */
+  const [useNativePlayer, setUseNativePlayer] = useState(true);
   const [embedSrc, setEmbedSrc] = useState<string | null>(null);
   const [embedAvailable, setEmbedAvailable] = useState(false);
   const [hlsMode, setHlsMode] = useState(false);
@@ -325,6 +326,11 @@ export function KodikPlayer() {
     }
     return hlsImportRef.current;
   }, []);
+
+  useEffect(() => {
+    void ensureHlsPreloaded();
+    void import("plyr/dist/plyr.css");
+  }, [ensureHlsPreloaded]);
 
   const translationsFiltered = useMemo(() => {
     const trs = watch && Array.isArray(watch.translations) ? watch.translations : [];
@@ -835,27 +841,32 @@ export function KodikPlayer() {
       setBusy(true);
       setGeoBlocked(false);
       setAnimeId(id);
+      void ensureHlsPreloaded();
       try {
         setStatus("загрузка…");
-        const data = (await apiJson(
-          playerBootstrapUrl(id, {
-            translationId: preferredTid,
-            episode: ep,
-            includeLink: false,
-          }),
-        )) as PlayerBootstrapResponse;
+        const pref = preferredTid?.trim() || null;
+        const [data, linkEarly] = await Promise.all([
+          apiJson(
+            playerBootstrapUrl(id, {
+              translationId: pref,
+              episode: ep,
+              includeLink: false,
+            }),
+          ) as Promise<PlayerBootstrapResponse>,
+          pref ? fetchKodikLinkQuiet(id, pref, ep) : Promise.resolve(null),
+        ]);
         const w = data.watch as WatchPayload;
         const tid = applyBootstrapData(data, preferredTid, ep);
         if (!tid) return null;
 
-        if (tryFastKodikIframe(w, tid, ep)) {
+        if (!useNativePlayer && tryFastKodikIframe(w, tid, ep)) {
           void fetchKodikLinkQuiet(id, tid, ep).then((link) => {
             if (link) enrichFromKodikLink(link);
           });
           return tid;
         }
 
-        const link = await fetchKodikLinkQuiet(id, tid, ep);
+        const link = linkEarly ?? (await fetchKodikLinkQuiet(id, tid, ep));
         if (link?.player_url) {
           await playStream({ animeId: id, translationId: tid, episode: ep, preloaded: link });
         } else {
@@ -875,10 +886,12 @@ export function KodikPlayer() {
       apiJson,
       applyBootstrapData,
       enrichFromKodikLink,
+      ensureHlsPreloaded,
       fetchKodikLinkQuiet,
       playStream,
       setStatus,
       tryFastKodikIframe,
+      useNativePlayer,
     ],
   );
 
@@ -1740,7 +1753,7 @@ export function KodikPlayer() {
                         title={
                           !embedAvailable
                             ? "Встроенный Kodik недоступен для этого ответа"
-                            : "Плеер Kodik — как на сайте, без прокси (быстрее)"
+                            : "Плеер Kodik (iframe) — без прокси API"
                         }
                         onClick={() => {
                           setUseNativePlayer(false);
@@ -1753,7 +1766,7 @@ export function KodikPlayer() {
                         type="button"
                         className={`sh-mini-btn${useNativePlayer ? " sh-mini-btn-active" : ""}`}
                         disabled={busy}
-                        title="Свой плеер Plyr и поток через API (качество, OP/ED)"
+                        title="Свой плеер Plyr + HLS (по умолчанию: качество, OP/ED)"
                         onClick={() => {
                           setUseNativePlayer(true);
                           void playSelected();
