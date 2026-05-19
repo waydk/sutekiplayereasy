@@ -69,86 +69,14 @@ type ChronologyItem = {
   date?: string | null;
 };
 
-const MY_LIST_SEED: Array<{ titleRu: string }> = [
-  { titleRu: "Стальной алхимик: Братство" },
-  { titleRu: "Атака титанов" },
-  { titleRu: "Тетрадь смерти" },
-  { titleRu: "Врата Штейна" },
-  { titleRu: "Охотник х Охотник" },
-  { titleRu: "Гинтама" },
-  { titleRu: "Ван-Пис" },
-  { titleRu: "Клинок, рассекающий демонов" },
-  { titleRu: "Магическая битва" },
-  { titleRu: "Код Гиас: Восставший Лелуш" },
-  { titleRu: "Монстр" },
-  { titleRu: "Сага о Винланде" },
-  { titleRu: "Моб Психо 100" },
-  { titleRu: "Ковбой Бибоп" },
-  { titleRu: "Самурай Чамплу" },
-  { titleRu: "Евангелион" },
-  { titleRu: "Созданный в Бездне" },
-  { titleRu: "Твоя апрельская ложь" },
-  { titleRu: "Кланнад: Продолжение истории" },
-];
-
-type MyListResolved = {
+type AnimeSearchRow = {
   anime_id: number;
   title: string;
   poster?: string | null;
   original_title?: string | null;
 };
 
-const MY_LIST_RESOLVE_CACHE_KEY = "suteki:my_list:resolved:v1";
-const MY_LIST_ITEMS_KEY = "suteki:my_list:items:v1";
-
 const SEARCH_DEBOUNCE_MS = 420;
-
-function readMyListCache(): Record<string, MyListResolved> {
-  if (typeof sessionStorage === "undefined") return {};
-  try {
-    const raw = sessionStorage.getItem(MY_LIST_RESOLVE_CACHE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed as Record<string, MyListResolved>;
-  } catch {
-    return {};
-  }
-}
-
-function writeMyListCache(next: Record<string, MyListResolved>) {
-  if (typeof sessionStorage === "undefined") return;
-  try {
-    sessionStorage.setItem(MY_LIST_RESOLVE_CACHE_KEY, JSON.stringify(next));
-  } catch {
-    // ignore quota / privacy mode
-  }
-}
-
-function readMyListItems(): MyListResolved[] {
-  if (typeof localStorage === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(MY_LIST_ITEMS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((x) => x && typeof x === "object")
-      .map((x) => x as MyListResolved)
-      .filter((x) => Number.isFinite(Number(x.anime_id)) && Number(x.anime_id) > 0);
-  } catch {
-    return [];
-  }
-}
-
-function writeMyListItems(next: MyListResolved[]) {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(MY_LIST_ITEMS_KEY, JSON.stringify(next));
-  } catch {
-    // ignore
-  }
-}
 
 function normalizeSearchQuery(raw: string): string {
   const s = String(raw || "");
@@ -174,17 +102,36 @@ function formatClockSec(sec: number): string {
  * hls.js tuning for VOD over proxied Kodik segments: quicker first frame, stable forward buffer,
  * cap quality to player size, conservative initial bandwidth estimate for ABR.
  */
+/** Минимальный буфер → воспроизведение с первого фрагмента. */
 const HLS_VOD_OPTIONS = {
   enableWorker: true,
   lowLatencyMode: false,
   startFragPrefetch: true,
-  capLevelToPlayerSize: true,
-  maxBufferLength: 28,
-  maxMaxBufferLength: 72,
-  backBufferLength: 24,
-  abrEwmaDefaultEstimate: 2_800_000,
-  startLevel: -1,
+  capLevelToPlayerSize: false,
+  maxBufferLength: 6,
+  maxMaxBufferLength: 24,
+  backBufferLength: 8,
+  abrEwmaDefaultEstimate: 8_000_000,
+  testBandwidth: false,
+  startLevel: 0,
 } as const;
+
+function playVideoAsap(v: HTMLVideoElement, resumeSec: number | null) {
+  const start = () => {
+    if (resumeSec != null && resumeSec > 0.25) {
+      try {
+        const d = v.duration;
+        const target = Number.isFinite(d) && d > 0 ? Math.min(resumeSec, Math.max(0, d - 0.25)) : resumeSec;
+        if (target > 0.25) v.currentTime = target;
+      } catch {
+        /* */
+      }
+    }
+    void v.play().catch(() => {});
+  };
+  if (v.readyState >= 2) start();
+  else v.addEventListener("loadeddata", start, { once: true });
+}
 
 /** Best-effort height for HLS variant label when manifest omits `height`. */
 function estimateHeightFromHlsLevel(level: {
@@ -266,7 +213,7 @@ export function KodikPlayer() {
   const [loadingBootstrap, setLoadingBootstrap] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [searchResults, setSearchResults] = useState<MyListResolved[]>([]);
+  const [searchResults, setSearchResults] = useState<AnimeSearchRow[]>([]);
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [searchDone, setSearchDone] = useState(false);
   /** true = Plyr+hls.js (по умолчанию); false = iframe Kodik. */
@@ -280,15 +227,6 @@ export function KodikPlayer() {
   const [playableEndKnown, setPlayableEndKnown] = useState(false);
   const [episodeJumpInput, setEpisodeJumpInput] = useState("");
   const [episodeJumpHint, setEpisodeJumpHint] = useState<{ text: string; error: boolean } | null>(null);
-  /** Пустой первый кадр на сервере и при гидрации; данные из storage — в `useEffect` ниже. */
-  const [myListResolved, setMyListResolved] = useState<Record<string, MyListResolved>>({});
-  const [myListItems, setMyListItems] = useState<MyListResolved[]>([]);
-  const [myListAddOpen, setMyListAddOpen] = useState(false);
-  const [myListOpen, setMyListOpen] = useState(true);
-  const [myListAddQuery, setMyListAddQuery] = useState("");
-  const [myListAddLoading, setMyListAddLoading] = useState(false);
-  const [myListAddErr, setMyListAddErr] = useState<string | null>(null);
-  const [myListAddResults, setMyListAddResults] = useState<MyListResolved[]>([]);
   const [chronology, setChronology] = useState<ChronologyItem[]>([]);
   const [chronologyLoading, setChronologyLoading] = useState(false);
   const [chronologyErr, setChronologyErr] = useState<string | null>(null);
@@ -306,6 +244,7 @@ export function KodikPlayer() {
   const hlsImportRef = useRef<Promise<typeof import("hls.js")> | null>(null);
   const searchReqIdRef = useRef(0);
   const lastDebouncedQueryRef = useRef<string>("");
+  const linkPrefetchRef = useRef<Promise<KodikLinkResponse | null> | null>(null);
   /** HLS (hls.js): UI heights order + corresponding `hls.levels` indices for switch/sync (updated with manifest). */
   const hlsQualityPickRef = useRef<{ heights: number[]; levelIdxs: number[] }>({
     heights: [],
@@ -440,13 +379,6 @@ export function KodikPlayer() {
     };
   }, []);
 
-  useEffect(() => {
-    queueMicrotask(() => {
-      setMyListResolved(readMyListCache());
-      setMyListItems(readMyListItems());
-    });
-  }, []);
-
   const loadEpisodes = useCallback(
     async (id: number, tid: string) => {
       setStatus("получаю /episodes (список серий)…");
@@ -521,6 +453,14 @@ export function KodikPlayer() {
     },
     [apiJson],
   );
+
+  useEffect(() => {
+    linkPrefetchRef.current = null;
+    if (!parsedAnimeId) return;
+    const pref = qpTid?.trim();
+    if (!pref) return;
+    linkPrefetchRef.current = fetchKodikLinkQuiet(parsedAnimeId, pref, parsedEp);
+  }, [parsedAnimeId, qpTid, parsedEp, fetchKodikLinkQuiet]);
 
   /** Один быстрый запрос bootstrap (без /kodik/link). */
   const bootstrapAnime = useCallback(
@@ -709,34 +649,22 @@ export function KodikPlayer() {
               const pick = buildHlsQualityPick(hls.levels);
               hlsQualityPickRef.current = pick;
               setQualityOptions(pick.heights);
-              const ci = hls.currentLevel;
-              if (ci >= 0 && pick.levelIdxs.includes(ci)) {
-                const oi = pick.levelIdxs.indexOf(ci);
-                setSelectedQuality(pick.heights[oi] ?? pick.heights[0] ?? "");
-              } else if (ci >= 0 && hls.levels[ci]) {
-                const h = estimateHeightFromHlsLevel(hls.levels[ci]);
-                setSelectedQuality(pick.heights.includes(h) ? h : (pick.heights[0] ?? ""));
-              } else {
-                setSelectedQuality(pick.heights[0] ?? "");
+              if (pick.levelIdxs.length) {
+                hls.currentLevel = pick.levelIdxs[pick.levelIdxs.length - 1]!;
               }
-              setStatus("загружаю поток…");
+              setSelectedQuality(pick.heights[pick.heights.length - 1] ?? pick.heights[0] ?? "");
+              setStatus("старт…");
             });
             const hlsForPlay = hls;
-            const onHlsCanPlay = () => {
-              if (hlsRef.current !== hlsForPlay) return;
-              if (resumeSec != null) {
-                try {
-                  const d = v.duration;
-                  const target = Number.isFinite(d) && d > 0 ? Math.min(resumeSec, Math.max(0, d - 0.25)) : resumeSec;
-                  if (target > 0.25) v.currentTime = target;
-                } catch {
-                  /* */
-                }
-              }
-              setStatus("готово к воспроизведению (HLS).");
-              void v.play().catch(() => {});
+            let hlsPlayStarted = false;
+            const kickHlsPlay = () => {
+              if (hlsPlayStarted || hlsRef.current !== hlsForPlay) return;
+              hlsPlayStarted = true;
+              setStatus("готово (HLS).");
+              playVideoAsap(v, resumeSec);
             };
-            v.addEventListener("canplay", onHlsCanPlay, { once: true });
+            hls.on(HlsMod.Events.FRAG_BUFFERED, kickHlsPlay);
+            hls.on(HlsMod.Events.BUFFER_APPENDED, kickHlsPlay);
             hls.on(HlsMod.Events.LEVEL_SWITCHED, (_, data) => {
               const inst = hlsRef.current;
               if (!inst) return;
@@ -770,20 +698,10 @@ export function KodikPlayer() {
             v.src = manifestSrc;
             v.load();
             const onCanPlayHls = () => {
-              v.removeEventListener("canplay", onCanPlayHls);
-              if (resumeSec != null) {
-                try {
-                  const d = v.duration;
-                  const target = Number.isFinite(d) && d > 0 ? Math.min(resumeSec, Math.max(0, d - 0.25)) : resumeSec;
-                  if (target > 0.25) v.currentTime = target;
-                } catch {
-                  /* */
-                }
-              }
-              setStatus("готово к воспроизведению (HLS).");
-              void v.play().catch(() => {});
+              setStatus("готово (HLS).");
+              playVideoAsap(v, resumeSec);
             };
-            v.addEventListener("canplay", onCanPlayHls);
+            v.addEventListener("loadeddata", onCanPlayHls, { once: true });
             startedHls = true;
           }
         }
@@ -797,21 +715,12 @@ export function KodikPlayer() {
           v.src = proxifyMediaUrl(mp4);
           v.load();
 
-          const onCanPlay = () => {
-            v.removeEventListener("canplay", onCanPlay);
-            if (resumeSec != null) {
-              try {
-                const d = v.duration;
-                const target = Number.isFinite(d) && d > 0 ? Math.min(resumeSec, Math.max(0, d - 0.25)) : resumeSec;
-                if (target > 0.25) v.currentTime = target;
-              } catch {
-                /* */
-              }
-            }
-            setStatus("готово к воспроизведению.");
-            void v.play().catch(() => {});
+          const onMp4Ready = () => {
+            v.removeEventListener("loadeddata", onMp4Ready);
+            setStatus("готово.");
+            playVideoAsap(v, resumeSec);
           };
-          v.addEventListener("canplay", onCanPlay);
+          v.addEventListener("loadeddata", onMp4Ready, { once: true });
           v.onerror = onVideoError;
         }
       } catch (e) {
@@ -845,6 +754,15 @@ export function KodikPlayer() {
       try {
         setStatus("загрузка…");
         const pref = preferredTid?.trim() || null;
+        const prefetched =
+          pref &&
+          parsedAnimeId === id &&
+          pref === (qpTid?.trim() || "") &&
+          ep === parsedEp &&
+          linkPrefetchRef.current
+            ? linkPrefetchRef.current
+            : null;
+        linkPrefetchRef.current = null;
         const [data, linkEarly] = await Promise.all([
           apiJson(
             playerBootstrapUrl(id, {
@@ -853,7 +771,7 @@ export function KodikPlayer() {
               includeLink: false,
             }),
           ) as Promise<PlayerBootstrapResponse>,
-          pref ? fetchKodikLinkQuiet(id, pref, ep) : Promise.resolve(null),
+          prefetched ?? (pref ? fetchKodikLinkQuiet(id, pref, ep) : Promise.resolve(null)),
         ]);
         const w = data.watch as WatchPayload;
         const tid = applyBootstrapData(data, preferredTid, ep);
@@ -1163,14 +1081,14 @@ export function KodikPlayer() {
         const payload = (await apiJson(`/api/v1/anime/search?q=${encodeURIComponent(q)}&limit=12`)) as {
           results?: unknown;
         };
-        const results = payload && Array.isArray(payload.results) ? (payload.results as MyListResolved[]) : [];
+        const results = payload && Array.isArray(payload.results) ? (payload.results as AnimeSearchRow[]) : [];
         const mapped = results
-          .filter((r) => r && typeof r === "object" && Number((r as MyListResolved).anime_id) > 0)
+          .filter((r) => r && typeof r === "object" && Number((r as AnimeSearchRow).anime_id) > 0)
           .map((r) => ({
-            anime_id: Number((r as MyListResolved).anime_id),
-            title: String((r as MyListResolved).title || ""),
-            poster: (r as MyListResolved).poster ?? null,
-            original_title: (r as MyListResolved).original_title ?? null,
+            anime_id: Number((r as AnimeSearchRow).anime_id),
+            title: String((r as AnimeSearchRow).title || ""),
+            poster: (r as AnimeSearchRow).poster ?? null,
+            original_title: (r as AnimeSearchRow).original_title ?? null,
           }));
         if (reqId !== searchReqIdRef.current) return;
         setSearchResults(mapped);
@@ -1216,7 +1134,7 @@ export function KodikPlayer() {
   }, [query, runSearch]);
 
   const openAnimeFromSearchResult = useCallback(
-    async (row: MyListResolved) => {
+    async (row: AnimeSearchRow) => {
       const newId = Number(row.anime_id);
       if (!Number.isFinite(newId) || newId <= 0) return;
       setBusy(true);
@@ -1276,96 +1194,6 @@ export function KodikPlayer() {
       cancelled = true;
     };
   }, [animeId, apiJson]);
-
-  const resolveMyListItem = useCallback(
-    async (titleRu: string): Promise<MyListResolved | null> => {
-      const key = titleRu.trim();
-      if (!key) return null;
-      const cached = myListResolved[key];
-      if (cached && Number.isFinite(cached.anime_id) && cached.anime_id > 0) return cached;
-      try {
-        const payload = (await apiJson(`/api/v1/anime/search?q=${encodeURIComponent(key)}&limit=10`)) as {
-          results?: unknown;
-        };
-        const results = payload && Array.isArray(payload.results) ? (payload.results as MyListResolved[]) : [];
-        const first = results.find((r) => r && typeof r === "object" && Number((r as MyListResolved).anime_id) > 0) || null;
-        if (!first) return null;
-        const resolved: MyListResolved = {
-          anime_id: Number(first.anime_id),
-          title: String(first.title || key),
-          poster: first.poster ?? null,
-          original_title: first.original_title ?? null,
-        };
-        setMyListResolved((prev) => {
-          const next = { ...prev, [key]: resolved };
-          writeMyListCache(next);
-          return next;
-        });
-        return resolved;
-      } finally {
-      }
-    },
-    [apiJson, myListResolved],
-  );
-
-  const addMyListItem = useCallback((row: MyListResolved) => {
-    const id = Number(row.anime_id);
-    if (!Number.isFinite(id) || id <= 0) return;
-    setMyListItems((prev) => {
-      const exists = prev.some((x) => Number(x.anime_id) === id);
-      const next = exists ? prev : [{ ...row, anime_id: id }, ...prev];
-      writeMyListItems(next);
-      return next;
-    });
-  }, []);
-
-  const runMyListAddSearch = useCallback(async () => {
-    const q = myListAddQuery.trim();
-    if (!q) return;
-    setMyListAddLoading(true);
-    setMyListAddErr(null);
-    try {
-      const payload = (await apiJson(`/api/v1/anime/search?q=${encodeURIComponent(q)}&limit=12`)) as {
-        results?: unknown;
-      };
-      const results = payload && Array.isArray(payload.results) ? (payload.results as MyListResolved[]) : [];
-      setMyListAddResults(
-        results
-          .filter((r) => r && typeof r === "object" && Number((r as MyListResolved).anime_id) > 0)
-          .map((r) => ({
-            anime_id: Number((r as MyListResolved).anime_id),
-            title: String((r as MyListResolved).title || ""),
-            poster: (r as MyListResolved).poster ?? null,
-            original_title: (r as MyListResolved).original_title ?? null,
-          })),
-      );
-    } catch (e) {
-      setMyListAddErr(String(e instanceof Error ? e.message : e));
-      setMyListAddResults([]);
-    } finally {
-      setMyListAddLoading(false);
-    }
-  }, [apiJson, myListAddQuery]);
-
-  const openAnimeFromMyListId = useCallback(
-    async (row: MyListResolved) => {
-      const newId = Number(row.anime_id);
-      if (!Number.isFinite(newId) || newId <= 0) return;
-      setBusy(true);
-      try {
-        setStatus(`открываю «${row.title || `#${newId}`}»…`);
-        setAnimeTitle(row.title || "");
-        setTranslationId(null);
-        await loadAnimeAndPlay(newId, null, 1);
-      } catch (e) {
-        console.error(e);
-        setStatus(`Не удалось открыть: ${String(e instanceof Error ? e.message : e)}`, { error: true });
-      } finally {
-        setBusy(false);
-      }
-    },
-    [loadAnimeAndPlay, setStatus],
-  );
 
   const navOpts = useMemo(() => episodeOptions.filter((x) => !x.disabled), [episodeOptions]);
 
@@ -1565,150 +1393,14 @@ export function KodikPlayer() {
         ) : null}
 
         <div className="sh-card sh-player-card">
-          <div className={`sh-stage${myListOpen ? "" : " sh-stage--mylist-collapsed"}`}>
-            <aside className="sh-mylist" aria-label="Мой список аниме" aria-hidden={!myListOpen}>
-              <div className="sh-mylist-header">
-                <strong>МОЙ СПИСОК</strong>
-                <div className="sh-mylist-actions">
-                  <span className="sh-mylist-meta">{myListItems.length}</span>
-                  <button
-                    type="button"
-                    className="sh-mini-btn sh-mylist-add"
-                    onClick={() => setMyListAddOpen((v) => !v)}
-                    disabled={busy}
-                  >
-                    Добавить
-                  </button>
-                  <button
-                    type="button"
-                    className="sh-mini-btn"
-                    onClick={() => setMyListOpen(false)}
-                    disabled={busy}
-                    aria-label="Скрыть мой список"
-                    title="Скрыть список"
-                  >
-                    Скрыть
-                  </button>
-                </div>
-              </div>
-              {myListAddOpen ? (
-                <div className="sh-mylist-add">
-                  <div className="sh-mylist-add-row">
-                    <input
-                      className="sh-input sh-mylist-add-input"
-                      placeholder="Найти и добавить (Shikimori)…"
-                      value={myListAddQuery}
-                      onChange={(e) => setMyListAddQuery(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && void runMyListAddSearch()}
-                      aria-label="Поиск для добавления в список"
-                    />
-                    <button
-                      type="button"
-                      className={`sh-btn primary${myListAddLoading ? " loading" : ""}`}
-                      onClick={() => void runMyListAddSearch()}
-                      disabled={busy || myListAddLoading}
-                    >
-                      {myListAddLoading ? <span className="sh-spinner" aria-hidden /> : null}
-                      Найти
-                    </button>
-                  </div>
-                  {myListAddErr ? <div className="sh-status error">{myListAddErr}</div> : null}
-                  {myListAddResults.length ? (
-                    <div className="sh-mylist-add-results" role="list" aria-label="Результаты поиска">
-                      {myListAddResults.map((r) => (
-                        <button
-                          key={`add-${r.anime_id}`}
-                          type="button"
-                          role="listitem"
-                          className="sh-mylist-add-item"
-                          onClick={() => {
-                            addMyListItem(r);
-                            setMyListAddOpen(false);
-                            setMyListAddResults([]);
-                            setMyListAddQuery("");
-                          }}
-                        >
-                          <span className="sh-mylist-add-item-main">
-                            <span className="sh-mylist-add-item-title">{r.title}</span>
-                            {r.original_title && r.original_title !== r.title ? (
-                              <span className="sh-mylist-add-item-sub">{r.original_title}</span>
-                            ) : null}
-                          </span>
-                          <span className="sh-mylist-add-item-go" aria-hidden>
-                            +
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="sh-mylist-scroll" role="list">
-                {myListItems.length === 0 ? (
-                  <div className="sh-mylist-empty" role="status">
-                    <div className="sh-mylist-empty-title">Пока пусто</div>
-                    <div className="sh-mylist-empty-text">Нажмите «Добавить», чтобы найти тайтл в Shikimori и сохранить здесь.</div>
-                    <button
-                      type="button"
-                      className="sh-btn"
-                      onClick={async () => {
-                        const resolved = await Promise.all(MY_LIST_SEED.map((s) => resolveMyListItem(s.titleRu)));
-                        for (const r of resolved) {
-                          if (r) addMyListItem(r);
-                        }
-                      }}
-                      disabled={busy}
-                    >
-                      Заполнить примером
-                    </button>
-                  </div>
-                ) : null}
-                {myListItems.map((row) => {
-                  const isActive = animeId != null && Number(row.anime_id) === Number(animeId);
-                  const title = row.title || `#${row.anime_id}`;
-                  const poster = row.poster;
-                  return (
-                    <div
-                      key={`my-${row.anime_id}`}
-                      role="listitem"
-                      className={`sh-mylist-item${isActive ? " active" : ""}`}
-                      tabIndex={0}
-                      onClick={() => void openAnimeFromMyListId(row)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          void openAnimeFromMyListId(row);
-                        }
-                      }}
-                    >
-                      <div className="sh-mylist-poster" aria-hidden>
-                        {poster ? (
-                          <img src={poster} alt="" width={44} height={62} className="sh-mylist-img" />
-                        ) : (
-                          <div className="sh-mylist-poster-ph" />
-                        )}
-                      </div>
-                      <div className="sh-mylist-main">
-                        <div className="sh-mylist-title">{title}</div>
-                        {row.original_title && row.original_title !== title ? (
-                          <div className="sh-mylist-sub">{row.original_title}</div>
-                        ) : null}
-                      </div>
-                      <div className="sh-mylist-go" aria-hidden>
-                        ▶
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </aside>
+          <div className="sh-stage sh-stage--mylist-collapsed">
             <div className="sh-video-pane">
               <div className={`sh-video-wrap${kodikFrameMode ? " sh-video-wrap-kodik" : ""}`}>
                 <video
                   ref={videoRef}
                   id="video"
                   playsInline
-                  preload="metadata"
+                  preload="auto"
                   className={kodikFrameMode ? "sh-video-backing" : undefined}
                   aria-label="Видео эпизода"
                   onWaiting={() => setBuffering(true)}
@@ -1735,16 +1427,6 @@ export function KodikPlayer() {
                     <span id="hudText">{hudText}</span>
                   </div>
                   <div className="sh-hud-controls">
-                    <button
-                      type="button"
-                      className={`sh-mini-btn${myListOpen ? " sh-mini-btn-active" : ""}`}
-                      disabled={busy}
-                      title={myListOpen ? "Скрыть список" : "Показать список"}
-                      aria-label={myListOpen ? "Скрыть мой список" : "Показать мой список"}
-                      onClick={() => setMyListOpen((v) => !v)}
-                    >
-                      Список
-                    </button>
                     <div className="sh-player-mode-toggle" role="group" aria-label="Режим плеера">
                       <button
                         type="button"
