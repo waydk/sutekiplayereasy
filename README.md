@@ -19,9 +19,12 @@ VITE_API_BASE=http://127.0.0.1:8000/api/v1
 
 ## Production
 
-- Фронт: GitHub Pages (`deploy-pages.yml`).
-- API: `sutekihub/backend` на `103.74.92.49`, HTTPS через cloudflared.
-- Сборка задаёт `VITE_API_BASE` (секрет репозитория или URL в workflow).
+- **Фронт:** GitHub Pages → `deploy-pages.yml`
+- **Бэк:** FastAPI на VPS `103.74.92.49:8000` (HTTP, без своего TLS)
+- **HTTPS к API:** папка [`api-proxy/`](api-proxy/) на Vercel (`https://suteki-api-proxy.vercel.app` → VPS)
+
+Один раз задеплой прокси: [`api-proxy/README.md`](api-proxy/README.md).  
+URL прокси: `public/runtime-config.json` (можно менять без пересборки).
 
 ## Как пользоваться
 

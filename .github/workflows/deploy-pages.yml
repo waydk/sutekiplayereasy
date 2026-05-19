@@ -36,8 +36,8 @@ jobs:
       - name: Build
         env:
           VITE_BASE: ${{ endsWith(github.event.repository.name, '.github.io') && '/' || format('/{0}/', github.event.repository.name) }}
-          # Опционально; иначе runtime-config.json и прямой fallback Kodik/Shikimori в браузере.
-          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+          # HTTPS-прокси на Vercel → HTTP VPS. Переопредели секретом VITE_API_BASE при другом URL.
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE != '' && secrets.VITE_API_BASE || 'https://suteki-api-proxy.vercel.app/api/v1' }}
         run: npm run build
 
       - name: Disable Jekyll (static Vite output as-is)
