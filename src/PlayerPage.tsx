@@ -18,7 +18,7 @@ import {
   kindLabel,
   searchAnimes,
 } from "./shikimoriApi";
-import { apiUrl } from "./apiBase";
+import { apiUrl, getApiBase } from "./apiBase";
 import { parseLaunchShikiId } from "./telegramWebApp";
 
 type DubbingOption = { id: string; name: string; range: string };
@@ -300,15 +300,37 @@ function kodikIframeSrc(list: KodikSearchResult[], translationId: number | null,
   return kodikSerialIframeSrcFromLink(baseRaw, ep);
 }
 
-async function kodikSearchList(shikiId: number): Promise<KodikSearchResult[]> {
-  const url = apiUrl(`/kodik/search?shikimori_id=${encodeURIComponent(String(shikiId))}`);
-  const r = await fetch(url, { headers: { Accept: "application/json" } });
-  const j = (await r.json().catch(() => ({}))) as { results?: unknown; detail?: unknown; message?: unknown };
+/** Запасной путь, если API на VPS недоступен (туннель / mixed content). */
+async function kodikSearchListDirect(shikiId: number): Promise<KodikSearchResult[]> {
+  const t = "56a768d08f43091901c44b54fe970049";
+  const url = `https://kodik-api.com/search?token=${encodeURIComponent(t)}&shikimori_id=${encodeURIComponent(String(shikiId))}&with_episodes=true`;
+  const r = await fetch(url, { method: "POST", headers: { Accept: "application/json" } });
+  const j = (await r.json().catch(() => ({}))) as { results?: unknown; message?: unknown };
   if (!r.ok) {
-    const detail = typeof j?.detail === "string" ? j.detail : typeof j?.message === "string" ? j.message : `HTTP ${r.status}`;
-    throw new Error(detail);
+    const msg = typeof j?.message === "string" ? j.message : `HTTP ${r.status}`;
+    throw new Error(msg);
   }
   return Array.isArray(j?.results) ? (j.results as KodikSearchResult[]) : [];
+}
+
+async function kodikSearchList(shikiId: number): Promise<KodikSearchResult[]> {
+  if (getApiBase()) {
+    try {
+      const url = apiUrl(`/kodik/search?shikimori_id=${encodeURIComponent(String(shikiId))}`);
+      const r = await fetch(url, { headers: { Accept: "application/json" } });
+      const j = (await r.json().catch(() => ({}))) as {
+        results?: unknown;
+        detail?: unknown;
+        message?: unknown;
+      };
+      if (r.ok) {
+        return Array.isArray(j?.results) ? (j.results as KodikSearchResult[]) : [];
+      }
+    } catch {
+      // fallback ниже
+    }
+  }
+  return kodikSearchListDirect(shikiId);
 }
 
 const MOBILE_NAV_MQ = "(max-width: 767.98px)";
