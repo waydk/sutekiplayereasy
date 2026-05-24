@@ -4,30 +4,63 @@ const BUILD_BASE = (import.meta.env.VITE_API_BASE ?? "").trim().replace(/\/+$/, 
 
 let resolvedBase = BUILD_BASE;
 
+if (typeof window !== "undefined") {
+  const { protocol, hostname } = window.location;
+  if (
+    !BUILD_BASE &&
+    (hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      protocol === "https:" ||
+      hostname.endsWith(".vercel.app"))
+  ) {
+    resolvedBase = `${window.location.origin}/api/v1`;
+  }
+}
+
+let apiBaseReady: Promise<void> = Promise.resolve();
+
 export function getApiBase(): string {
   return resolvedBase;
 }
 
+function useSameOriginApiBase(): boolean {
+  if (typeof window === "undefined") return false;
+  const { protocol, hostname } = window.location;
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  if (protocol === "https:") return true;
+  if (hostname.endsWith(".vercel.app")) return true;
+  return false;
+}
+
 /** Загрузить /runtime-config.json (можно обновить без пересборки). */
-export async function initApiBase(): Promise<void> {
-  if (typeof window !== "undefined" && !BUILD_BASE) {
-    const host = window.location.hostname;
-    if (host.endsWith(".vercel.app") || host === "localhost" || host === "127.0.0.1") {
+export function initApiBase(): Promise<void> {
+  apiBaseReady = (async () => {
+    if (typeof window !== "undefined" && !BUILD_BASE && useSameOriginApiBase()) {
       resolvedBase = `${window.location.origin}/api/v1`;
       return;
     }
-  }
-  const base = import.meta.env.BASE_URL || "/";
-  const cfgUrl = `${base.replace(/\/?$/, "/")}runtime-config.json`.replace(/\/+/g, "/");
-  try {
-    const r = await fetch(cfgUrl, { cache: "no-store" });
-    if (!r.ok) return;
-    const j = (await r.json()) as { apiBase?: string };
-    const raw = (j.apiBase ?? "").trim().replace(/\/+$/, "");
-    if (raw) resolvedBase = raw;
-  } catch {
-    // оставляем BUILD_BASE или dev proxy
-  }
+    const base = import.meta.env.BASE_URL || "/";
+    const cfgUrl = `${base.replace(/\/?$/, "/")}runtime-config.json`.replace(/\/+/g, "/");
+    try {
+      const r = await fetch(cfgUrl, { cache: "no-store" });
+      if (!r.ok) return;
+      const j = (await r.json()) as { apiBase?: string };
+      const raw = (j.apiBase ?? "").trim().replace(/\/+$/, "");
+      if (raw) resolvedBase = raw;
+      else if (typeof window !== "undefined" && useSameOriginApiBase()) {
+        resolvedBase = `${window.location.origin}/api/v1`;
+      }
+    } catch {
+      if (typeof window !== "undefined" && useSameOriginApiBase()) {
+        resolvedBase = `${window.location.origin}/api/v1`;
+      }
+    }
+  })();
+  return apiBaseReady;
+}
+
+export function whenApiBaseReady(): Promise<void> {
+  return apiBaseReady;
 }
 
 export function apiUrl(path: string): string {

@@ -6,7 +6,7 @@
 2. **Root Directory:** `.` (корень репо)
 3. Framework: **Vite** (подхватится из `vercel.json`)
 4. **Environment variables:**
-   - `BACKEND_ORIGIN` = `http://103-74-92-49.sslip.io:8765` (hostname вместо IP — Edge Vercel не ходит на голый IP)
+   - `BACKEND_ORIGIN` = `http://103-74-92-49.sslip.io:8000` (hostname вместо IP — Edge Vercel не ходит на голый IP; systemd слушает :8000)
 5. Deploy
 
 Сайт: `https://<project>.vercel.app` — API на том же домене: `/api/v1/…`
@@ -30,6 +30,6 @@ curl http://127.0.0.1:8765/health
 ```bash
 cd sutekiplayereasy
 npx vercel link
-npx vercel env add BACKEND_ORIGIN   # http://103-74-92-49.sslip.io:8765
+npx vercel env add BACKEND_ORIGIN   # http://103-74-92-49.sslip.io:8000
 npm run deploy:vercel
 ```

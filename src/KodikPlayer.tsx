@@ -1,18 +1,55 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type Hls from "hls.js";
 import type Plyr from "plyr";
+import { usePlayerSearchFocus } from "./hooks/usePlayerSearchFocus";
 import { useTelegramWebApp } from "./hooks/useTelegramWebApp";
 import { useSearchParams } from "./hooks/useSearchParams";
-import { parseLaunchShikiId } from "./telegramWebApp";
-import { shouldShowDebugPanel } from "./lib/showDebug";
+import { pushLaunchShikiId } from "./hooks/useLaunchShikiId";
+import { isTelegramWebApp, parseLaunchShikiId } from "./telegramWebApp";
+import { shouldShowDebugPanel, shouldShowStartupTrace } from "./lib/showDebug";
+import {
+  bootstrapCache,
+  cacheGet,
+  cacheSet,
+  CACHE_TTL_BOOTSTRAP_MS,
+  CACHE_TTL_EPISODES_MS,
+  CACHE_TTL_LINK_MS,
+  linkCache,
+  preconnectMediaOrigin,
+  warmBootstrap,
+  type CacheEntry,
+  type KodikLinkResponse,
+} from "./lib/playerCache";
+import { preloadMp4Url } from "./lib/playerCache";
+import { tryEarlyVideoStart } from "./lib/earlyVideoStart";
+import {
+  canPlayNativeHls,
+  firstFrameWatchdogMs,
+  formatStartupTrace,
+  getStartupNetworkHints,
+  getSutekiApiClient,
+  isMobileStartup,
+  logStartupTrace,
+  pickKodikMp4Quality,
+  shouldAutoplayMuted,
+  shouldDirectMp4Url,
+  shouldMp4FirstStart,
+  shouldPreloadHlsJs,
+  shouldTryHlsStart,
+  startupClientLabel,
+  type StartupMode,
+  type StartupTrace,
+} from "./lib/startupPolicy";
+import { fetchKodikSkipMarkersAsync } from "./lib/kodikSkipFetch";
+import { formatApiError, formatVideoError, tgHaptic } from "./lib/userMessages";
 import {
   availableQualities,
   buildEpisodesOptions,
-  buildKodikEmbedWatchUrl,
   buildKodikEpisodesPayloadFromWatch,
   formatTranslationLabel,
   inferQualityFromUrl,
   pickFirstTranslationId,
+  pickTranslationForEpisode,
   proxifyMediaUrl,
   resolveHlsManifestUrl,
   replaceQualityInUrl,
@@ -27,12 +64,37 @@ import {
   KODIK_SKIP_SEEK,
   pickSkipMarkersFromKodikLink,
   seekVideoToSec,
+  shouldAutoSkipOpening,
   type KodikSkipMarkers,
 } from "./lib/kodikSkip";
+import {
+  expandHlsBufferAfterPlay,
+  HLS_INSTANT_START_OPTIONS,
+  warmMp4HeadWindow,
+} from "./lib/progressiveBuffer";
 import { hubApiUrl, playerBootstrapUrl, type PlayerBootstrapResponse } from "./lib/playerApi";
+import { PLYR_QUALITY_CONFIG, syncPlyrQualityMenu } from "./lib/plyrQualitySync";
+import {
+  PLAYER_WAIT_GIF_DEFAULT,
+  WAIT_PHRASES_BUFFER,
+  WAIT_PHRASES_LOADER,
+} from "./lib/waitPhrases";
+import {
+  flushWatchProgress,
+  formatClockSec,
+  formatResumeHint,
+  readResumeSec,
+  resolveLaunchWatch,
+  writeResumeSec,
+} from "./lib/watchProgress";
+import {
+  normalizeSearchQuery,
+  searchAnime,
+  SEARCH_DEBOUNCE_MS,
+  type AnimeSearchRow,
+} from "./lib/animeSearch";
 
 type WatchPayload = {
-  /** URL страницы плеера Kodik с `/watch` — для preconnect и сборки kodik_embed_url на бэкенде. */
   player_url?: string;
   translations?: TranslationRow[];
   series_count?: number;
@@ -42,22 +104,36 @@ type WatchPayload = {
 
 type EpisodesPayload = Parameters<typeof buildEpisodesOptions>[0];
 
-type KodikLinkResponse = {
-  player_url?: string;
-  /** Готовый URL iframe: поток с CDN Kodik без прокси Suteki Hub (быстрый режим). */
-  kodik_embed_url?: string;
-  kodik_max_quality?: number | null;
-  hls_manifest_url?: string;
-  prefer_hls?: boolean;
-  /** Если Kodik/бэкенд начнут отдавать таймкоды — подхватятся в `pickSkipMarkersFromKodikLink`. */
-  opening_end_sec?: number | null;
-  op_end_sec?: number | null;
-  skip_opening_to_sec?: number | null;
-  ending_start_sec?: number | null;
-  ed_start_sec?: number | null;
-  ending_skip_to_sec?: number | null;
-  skip_ending_to_sec?: number | null;
+/** Сколько раз подряд перезапросить /kodik/link при протухшем CDN (MediaError 2/4). */
+const MAX_STALE_LINK_MEDIA_RETRIES = 2;
+const STALE_LINK_MEDIA_ERROR_CODES = new Set([2, 4]);
+
+type PlayStreamOptions = {
+  animeId: number;
+  translationId: string;
+  episode: number;
+  resumeAfterLoadSec?: number | null;
+  /** Позиция из «последний просмотр», если нет отдельного ключа по серии. */
+  savedResumeSec?: number | null;
+  preloaded?: KodikLinkResponse | null;
+  bootstrapMs?: number;
+  /** true = этот вызов уже ретрай после ошибки источника; не сбрасывать счётчик. */
+  staleLinkRetry?: boolean;
+  /** После ошибки HLS — сразу MP4 (свежий /kodik/link). */
+  forceMp4?: boolean;
 };
+
+const TV_KINDS = new Set(["tv", "tv_special", "tv_13", "tv_24", "tv_48"]);
+function isTvChronologyKind(kind: string | null | undefined): boolean {
+  const raw = String(kind || "").trim().toLowerCase();
+  if (!raw) return false;
+  const normalized = raw.replace(/\s+/g, "_");
+  if (TV_KINDS.has(normalized)) return true;
+  // Shikimori/прокси иногда отдают вид типа "TV сериал", "TV series", "tv-24".
+  if (raw.startsWith("tv")) return true;
+  if (/\btv\b/.test(raw)) return true;
+  return false;
+}
 
 type ChronologyItem = {
   anime_id: number;
@@ -69,68 +145,145 @@ type ChronologyItem = {
   date?: string | null;
 };
 
-type AnimeSearchRow = {
-  anime_id: number;
-  title: string;
-  poster?: string | null;
-  original_title?: string | null;
-};
-
-const SEARCH_DEBOUNCE_MS = 420;
-
-function normalizeSearchQuery(raw: string): string {
-  const s = String(raw || "");
-  return s
-    .normalize("NFKC")
-    .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** Человекочитаемое время для строки отладки плеера (m:ss или h:mm:ss). */
-function formatClockSec(sec: number): string {
-  if (!Number.isFinite(sec) || sec < 0) return "—";
-  const total = Math.floor(sec);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${m}:${String(s).padStart(2, "0")}`;
+/** Обновить URL без reload — deep link / refresh совпадают с выбранным тайтлом. */
+function replaceUrlAnime(animeId: number, episode = 1, translationId?: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.set("shiki_id", String(animeId));
+    u.searchParams.set("episode", String(Math.max(1, episode)));
+    const tid = (translationId ?? "").trim();
+    if (tid) u.searchParams.set("translation_id", tid);
+    else u.searchParams.delete("translation_id");
+    window.history.replaceState(window.history.state, "", u);
+  } catch {
+    /* */
+  }
 }
 
 /**
- * hls.js tuning for VOD over proxied Kodik segments: quicker first frame, stable forward buffer,
- * cap quality to player size, conservative initial bandwidth estimate for ABR.
+ * hls.js tuning for VOD over proxied Kodik segments.
+ * Балансируем «быстрый старт» и «выживание на флапающем CDN».
+ * Слишком короткие timeouts → лишние fallback на MP4, который тоже может тупить.
  */
-/** Минимальный буфер → воспроизведение с первого фрагмента. */
 const HLS_VOD_OPTIONS = {
   enableWorker: true,
   lowLatencyMode: false,
   startFragPrefetch: true,
   capLevelToPlayerSize: false,
-  maxBufferLength: 6,
-  maxMaxBufferLength: 24,
+  maxBufferLength: 3,
+  maxMaxBufferLength: 20,
   backBufferLength: 8,
-  abrEwmaDefaultEstimate: 8_000_000,
+  abrEwmaDefaultEstimate: 12_000_000,
   testBandwidth: false,
-  startLevel: 0,
+  startLevel: -1,
+  manifestLoadingTimeOut: 6000,
+  manifestLoadingMaxRetry: 2,
+  fragLoadingTimeOut: 8000,
+  fragLoadingMaxRetry: 3,
+  levelLoadingTimeOut: 5000,
 } as const;
+const HLS_START_WATCHDOG_MS = 4500;
+const HLS_START_WATCHDOG_RESUME_MS = 12_000;
+/** recoverMediaError / startLoad перед fallback на MP4 или refresh link. */
+const HLS_RECOVER_MAX = 2;
+const API_FETCH_TIMEOUT_MS = 9000;
+const API_FETCH_TIMEOUT_TG_MS = 5500;
+const API_RETRY_MAX_ATTEMPTS = 2;
+const API_RETRY_MAX_ATTEMPTS_TG = 1;
+const API_RETRY_BASE_MS = 260;
 
-function playVideoAsap(v: HTMLVideoElement, resumeSec: number | null) {
-  const start = () => {
-    if (resumeSec != null && resumeSec > 0.25) {
-      try {
-        const d = v.duration;
-        const target = Number.isFinite(d) && d > 0 ? Math.min(resumeSec, Math.max(0, d - 0.25)) : resumeSec;
-        if (target > 0.25) v.currentTime = target;
-      } catch {
-        /* */
-      }
-    }
-    void v.play().catch(() => {});
+function pickInitialHlsLevelIdx(
+  pick: { heights: number[]; levelIdxs: number[] },
+  maxStartHeight: number | null,
+): number | null {
+  if (!pick.levelIdxs.length) return null;
+  if (maxStartHeight == null) return pick.levelIdxs[pick.levelIdxs.length - 1] ?? null;
+  for (let i = 0; i < pick.heights.length; i += 1) {
+    if (pick.heights[i] <= maxStartHeight) return pick.levelIdxs[i] ?? null;
+  }
+  return pick.levelIdxs[pick.levelIdxs.length - 1] ?? null;
+}
+
+function playVideoAsap(
+  v: HTMLVideoElement,
+  resumeSec: number | null,
+  hooks?: {
+    onAutoplayBlocked?: () => void;
+    onFirstFrame?: () => void;
+    onFirstPlay?: () => void;
+  },
+  opts?: { tryMutedAutoplay?: boolean; unmuteAfterAutoplay?: boolean },
+) {
+  if (typeof navigator !== "undefined" && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+    v.setAttribute("playsinline", "true");
+    v.playsInline = true;
+  }
+  let frameMarked = false;
+  let playMarked = false;
+  const markFrame = () => {
+    if (frameMarked) return;
+    frameMarked = true;
+    hooks?.onFirstFrame?.();
   };
-  if (v.readyState >= 2) start();
-  else v.addEventListener("loadeddata", start, { once: true });
+  const markPlay = () => {
+    if (playMarked) return;
+    playMarked = true;
+    hooks?.onFirstPlay?.();
+  };
+  const applyResume = () => {
+    if (resumeSec == null || resumeSec <= 0.25) return;
+    try {
+      const d = v.duration;
+      const target =
+        Number.isFinite(d) && d > 0 ? Math.min(resumeSec, Math.max(0, d - 0.25)) : resumeSec;
+      if (target > 0.25) v.currentTime = target;
+    } catch {
+      /* */
+    }
+  };
+  const start = () => {
+    applyResume();
+    const runPlay = () => {
+      void v
+        .play()
+        .then(() => {
+          markPlay();
+        })
+        .catch(() => hooks?.onAutoplayBlocked?.());
+    };
+    if (opts?.tryMutedAutoplay) {
+      const prevMuted = v.muted;
+      v.muted = true;
+      void v
+        .play()
+        .then(() => {
+          markPlay();
+          if (opts.unmuteAfterAutoplay) v.muted = false;
+          else v.muted = prevMuted;
+        })
+        .catch(() => {
+          v.muted = prevMuted;
+          runPlay();
+        });
+      return;
+    }
+    runPlay();
+  };
+  v.addEventListener(
+    "playing",
+    () => {
+      markFrame();
+      markPlay();
+    },
+    { once: true },
+  );
+  const onReady = () => {
+    markFrame();
+    start();
+  };
+  if (v.readyState >= 2) onReady();
+  else v.addEventListener("loadeddata", onReady, { once: true });
 }
 
 /** Best-effort height for HLS variant label when manifest omits `height`. */
@@ -174,24 +327,52 @@ function buildHlsQualityPick(levels: Array<{ height?: number; width?: number; bi
 export function KodikPlayer() {
   const searchParams = useSearchParams();
   useTelegramWebApp(true);
+  const { onSearchFocus, onSearchBlur, dismissSearchKeyboard } = usePlayerSearchFocus();
   const showDebug = shouldShowDebugPanel();
+  const showStartupTrace = shouldShowStartupTrace();
+  const inTelegram = isTelegramWebApp();
+  const [tgLaunchId, setTgLaunchId] = useState<number | null>(() => parseLaunchShikiId());
 
-  const launchShiki = parseLaunchShikiId();
+  useEffect(() => {
+    const syncLaunchId = () => {
+      const id = parseLaunchShikiId();
+      if (id) setTgLaunchId(id);
+    };
+    syncLaunchId();
+    const tg = window.Telegram?.WebApp;
+    tg?.onEvent?.("viewportChanged", syncLaunchId);
+    return () => tg?.offEvent?.("viewportChanged", syncLaunchId);
+  }, []);
+  const launchShiki = tgLaunchId;
   const qpAnime = searchParams.get("anime_id") || searchParams.get("shiki_id");
   const parsedAnimeId =
     launchShiki ??
     (qpAnime && !Number.isNaN(Number(qpAnime)) && Number(qpAnime) > 0 ? Math.floor(Number(qpAnime)) : null);
   const qpTid = searchParams.get("translation_id");
   const qpEp = searchParams.get("episode");
+  const hasExplicitEpisodeInUrl = searchParams.has("episode");
   const parsedEp =
     qpEp && !Number.isNaN(Number(qpEp)) && Number(qpEp) > 0 ? Math.floor(Number(qpEp)) : 1;
+  const launchWatch = useMemo(
+    () =>
+      parsedAnimeId
+        ? resolveLaunchWatch(parsedAnimeId, {
+            explicitEpisode: hasExplicitEpisodeInUrl,
+            urlEpisode: parsedEp,
+            urlTranslationId: qpTid ? String(qpTid) : null,
+          })
+        : null,
+    [parsedAnimeId, hasExplicitEpisodeInUrl, parsedEp, qpTid],
+  );
 
   const defaultQ = searchParams.get("q") || "";
 
   const [query, setQuery] = useState(defaultQ);
   const [animeId, setAnimeId] = useState<number | null>(parsedAnimeId);
-  const [translationId, setTranslationId] = useState<string | null>(qpTid ? String(qpTid) : null);
-  const [episode, setEpisode] = useState(parsedEp);
+  const [translationId, setTranslationId] = useState<string | null>(
+    launchWatch?.translationId ?? (qpTid ? String(qpTid) : null),
+  );
+  const [episode, setEpisode] = useState(launchWatch?.episode ?? parsedEp);
   const [animeTitle, setAnimeTitle] = useState("");
   const [watch, setWatch] = useState<WatchPayload | null>(null);
   const [episodes, setEpisodes] = useState<EpisodesPayload | null>(null);
@@ -216,10 +397,7 @@ export function KodikPlayer() {
   const [searchResults, setSearchResults] = useState<AnimeSearchRow[]>([]);
   const [searchErr, setSearchErr] = useState<string | null>(null);
   const [searchDone, setSearchDone] = useState(false);
-  /** true = Plyr+hls.js (по умолчанию); false = iframe Kodik. */
-  const [useNativePlayer, setUseNativePlayer] = useState(true);
-  const [embedSrc, setEmbedSrc] = useState<string | null>(null);
-  const [embedAvailable, setEmbedAvailable] = useState(false);
+  const [needsPlayTap, setNeedsPlayTap] = useState(false);
   const [hlsMode, setHlsMode] = useState(false);
   /** Safari / native HLS: no hls.js instance — quality control API unavailable. */
   const [hlsNativeQualityLock, setHlsNativeQualityLock] = useState(false);
@@ -236,15 +414,97 @@ export function KodikPlayer() {
     duration: Number.NaN,
     paused: true,
   });
+  const [startupBreakdown, setStartupBreakdown] = useState("—");
+  const [awaitingFirstFrame, setAwaitingFirstFrame] = useState(false);
+  const [resumeHintSec, setResumeHintSec] = useState<number | null>(null);
+  const [resumeHintEpisode, setResumeHintEpisode] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (resumeHintSec == null) return;
+    const t = window.setTimeout(() => setResumeHintSec(null), 6000);
+    return () => clearTimeout(t);
+  }, [resumeHintSec]);
+
+  useEffect(() => {
+    if (resumeHintSec == null) return;
+    const v = videoRef.current;
+    if (!v) return;
+    const dismiss = () => setResumeHintSec(null);
+    v.addEventListener("playing", dismiss, { once: true });
+    v.addEventListener("seeked", dismiss, { once: true });
+    return () => {
+      v.removeEventListener("playing", dismiss);
+      v.removeEventListener("seeked", dismiss);
+    };
+  }, [resumeHintSec]);
+
+  const waitGifUrl = useMemo(() => {
+    const raw = import.meta.env.VITE_PLAYER_WAIT_GIF_URL;
+    const s = typeof raw === "string" ? raw.trim() : "";
+    return s || PLAYER_WAIT_GIF_DEFAULT;
+  }, []);
+
+  const [waitGifFailed, setWaitGifFailed] = useState(false);
+  useEffect(() => {
+    setWaitGifFailed(false);
+  }, [waitGifUrl]);
+
+  const [bufPhraseI, setBufPhraseI] = useState(0);
+  useEffect(() => {
+    if (!buffering) return;
+    setBufPhraseI(0);
+    const n = WAIT_PHRASES_BUFFER.length;
+    const t = window.setInterval(() => {
+      setBufPhraseI((i) => (i + 1) % n);
+    }, 2400);
+    return () => clearInterval(t);
+  }, [buffering]);
+
+  const [loadPhraseI, setLoadPhraseI] = useState(0);
+  useEffect(() => {
+    const active = (busy || loadingBootstrap || awaitingFirstFrame) && !needsPlayTap;
+    if (!active) return;
+    setLoadPhraseI(0);
+    const n = WAIT_PHRASES_LOADER.length;
+    const t = window.setInterval(() => {
+      setLoadPhraseI((i) => (i + 1) % n);
+    }, 2600);
+    return () => clearInterval(t);
+  }, [busy, loadingBootstrap, needsPlayTap]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const episodeJumpHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const plyrRef = useRef<Plyr | null>(null);
+  const switchQualityRef = useRef<(q: number) => void>(() => {});
   const hlsRef = useRef<Hls | null>(null);
   const hlsImportRef = useRef<Promise<typeof import("hls.js")> | null>(null);
   const searchReqIdRef = useRef(0);
   const lastDebouncedQueryRef = useRef<string>("");
-  const linkPrefetchRef = useRef<Promise<KodikLinkResponse | null> | null>(null);
+  const earlyVideoStartedRef = useRef(false);
+  const earlyStartTargetRef = useRef<{
+    animeId: number;
+    translationId: string;
+    episode: number;
+  } | null>(null);
+
+  function earlyStartMatches(animeId: number, translationId: string, episode: number): boolean {
+    const t = earlyStartTargetRef.current;
+    if (!earlyVideoStartedRef.current || !t) return false;
+    return t.animeId === animeId && t.episode === episode && t.translationId === translationId;
+  }
+  const openingAutoSkippedRef = useRef(false);
+  const playStreamRef = useRef<((opts: PlayStreamOptions) => Promise<void>) | null>(null);
+  const loadAnimeAndPlayRef = useRef<
+    ((id: number, preferredTid: string | null, ep: number) => Promise<string | null>) | null
+  >(null);
+  /** Отмена устаревших loadAnimeAndPlay (race URL autoload vs выбор из поиска). */
+  const loadAnimeReqIdRef = useRef(0);
+  /** Пользователь выбрал другой тайтл — не перезагружать parsedAnimeId из URL. */
+  const userPickedAnimeRef = useRef(false);
+  const staleLinkRetryCountRef = useRef(0);
+  const playReqIdRef = useRef(0);
+  const episodesCacheRef = useRef(new Map<string, CacheEntry<EpisodesPayload>>());
+  const publishStartupTraceRef = useRef<(partial?: Partial<StartupTrace>) => void>(() => {});
   /** HLS (hls.js): UI heights order + corresponding `hls.levels` indices for switch/sync (updated with manifest). */
   const hlsQualityPickRef = useRef<{ heights: number[]; levelIdxs: number[] }>({
     heights: [],
@@ -267,9 +527,32 @@ export function KodikPlayer() {
   }, []);
 
   useEffect(() => {
-    void ensureHlsPreloaded();
-    void import("plyr/dist/plyr.css");
-  }, [ensureHlsPreloaded]);
+    if (!shouldPreloadHlsJs(inTelegram)) return;
+    if (parsedAnimeId) void ensureHlsPreloaded();
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      const id = (
+        window as Window & {
+          requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => number;
+        }
+      ).requestIdleCallback(
+        () => {
+          void ensureHlsPreloaded();
+        },
+        { timeout: 2500 },
+      );
+      return () => {
+        if ("cancelIdleCallback" in window) {
+          (
+            window as Window & {
+              cancelIdleCallback: (n: number) => void;
+            }
+          ).cancelIdleCallback(id);
+        }
+      };
+    }
+    const t = setTimeout(() => void ensureHlsPreloaded(), 1200);
+    return () => clearTimeout(t);
+  }, [ensureHlsPreloaded, inTelegram, parsedAnimeId]);
 
   const translationsFiltered = useMemo(() => {
     const trs = watch && Array.isArray(watch.translations) ? watch.translations : [];
@@ -282,9 +565,35 @@ export function KodikPlayer() {
     );
   }, [watch, trSearch]);
 
+  const translationsForStrip = useMemo(() => {
+    const filtered = translationsFiltered;
+    const activeId = translationId ? String(translationId) : "";
+    if (!activeId || filtered.some((t) => translationRowIdString(t) === activeId)) return filtered;
+    const active = (watch?.translations || []).find((t) => translationRowIdString(t) === activeId);
+    return active && translationRowHasId(active) ? [active, ...filtered] : filtered;
+  }, [translationsFiltered, translationId, watch]);
+
+  useEffect(() => {
+    if (!watch || !Array.isArray(watch.translations)) return;
+    const ids = watch.translations.filter((t) => translationRowHasId(t)).map((t) => translationRowIdString(t));
+    if (!ids.length) return;
+    if (!translationId || !ids.includes(String(translationId))) {
+      setTranslationId(ids[0]);
+    }
+  }, [watch, translationId]);
+
   // (was) primary + carousel split; now we render one horizontal strip
 
-  const episodeOptions = useMemo(() => buildEpisodesOptions(episodes), [episodes]);
+  const episodeOptions = useMemo(() => {
+    const fromPayload = buildEpisodesOptions(episodes);
+    if (fromPayload.length > 0) return fromPayload;
+    const tid = String(translationId || "").trim();
+    if (watch && tid && translationHasSeriesRangeForTranslationId(watch, tid)) {
+      return buildEpisodesOptions(buildKodikEpisodesPayloadFromWatch(watch, tid, 24));
+    }
+    return fromPayload;
+  }, [episodes, translationId, watch]);
+  const showEpisodesLoading = Boolean(animeId) && episodes === null && !geoBlocked;
 
   const setStatus = useCallback((text: string, opts?: { error?: boolean }) => {
     setStatusLine({ text, error: opts?.error ?? false });
@@ -313,34 +622,100 @@ export function KodikPlayer() {
     async (pathOrUrl: string) => {
       const url = resolveApiUrl(pathOrUrl);
       setEndpoint(url);
-      const r = await fetch(url, { headers: { Accept: "application/json" } });
-      const j = await r.json().catch(() => ({}));
-      if (showDebug) console.log("API:", url, j);
-      applyDebug(j);
-      if (!r.ok) {
-        let msg = `HTTP ${r.status}`;
-        if (j && typeof j === "object" && j !== null && "detail" in j) {
-          const d = (j as { detail?: unknown }).detail;
-          if (typeof d === "string") msg = d;
-          else if (d && typeof d === "object" && d !== null && "message" in d) {
-            msg = String((d as { message?: string }).message || msg);
+      const maxAttempts = inTelegram ? API_RETRY_MAX_ATTEMPTS_TG : API_RETRY_MAX_ATTEMPTS;
+      const fetchTimeoutMs = inTelegram ? API_FETCH_TIMEOUT_TG_MS : API_FETCH_TIMEOUT_MS;
+      let lastErr: Error | null = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+        const timeoutId = setTimeout(() => ctrl?.abort(), fetchTimeoutMs);
+        try {
+          const apiHeaders: Record<string, string> = { Accept: "application/json" };
+          const apiClient = getSutekiApiClient();
+          if (apiClient) apiHeaders["X-Suteki-Client"] = apiClient;
+          const r = await fetch(url, {
+            headers: apiHeaders,
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: ctrl?.signal,
+          });
+          const j = await r.json().catch(() => ({}));
+          if (showDebug) console.log("API:", url, j, `attempt=${attempt}`);
+          applyDebug(j);
+          if (!r.ok) {
+            /* Сохраняем HTTP-код в начале сообщения — formatApiError классифицирует по нему. */
+            let detailText = "";
+            if (j && typeof j === "object" && j !== null && "detail" in j) {
+              const d = (j as { detail?: unknown }).detail;
+              if (typeof d === "string") detailText = d;
+              else if (d && typeof d === "object" && d !== null && "message" in d) {
+                detailText = String((d as { message?: string }).message || "");
+              }
+            }
+            const msg = detailText ? `HTTP ${r.status} ${detailText}` : `HTTP ${r.status}`;
+            const retryableHttp = r.status === 429 || r.status === 502 || r.status === 504;
+            if (retryableHttp && attempt < maxAttempts) {
+              const jitter = Math.floor(Math.random() * 120);
+              const waitMs = API_RETRY_BASE_MS * 2 ** (attempt - 1) + jitter;
+              if (showDebug) console.warn(`API retry ${attempt}/${maxAttempts - 1}: ${msg}`);
+              await new Promise((resolve) => setTimeout(resolve, waitMs));
+              continue;
+            }
+            throw new Error(formatApiError(new Error(msg)));
           }
+          return j;
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          const timedOut = err.name === "AbortError";
+          const retryable = timedOut || /fetch failed|network|unreachable|timeout/i.test(err.message);
+          lastErr = timedOut ? new Error("request_timeout") : err;
+          if (retryable && attempt < maxAttempts) {
+            const jitter = Math.floor(Math.random() * 120);
+            const waitMs = API_RETRY_BASE_MS * 2 ** (attempt - 1) + jitter;
+            if (showDebug) console.warn(`API network retry ${attempt}/${maxAttempts - 1}: ${lastErr.message}`);
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            continue;
+          }
+          throw new Error(formatApiError(lastErr));
+        } finally {
+          clearTimeout(timeoutId);
         }
-        throw new Error(msg);
       }
-      return j;
+      throw new Error(formatApiError(lastErr ?? new Error("API request failed")));
     },
-    [applyDebug, resolveApiUrl, showDebug],
+    [applyDebug, inTelegram, resolveApiUrl, showDebug],
   );
 
+  useLayoutEffect(() => {
+    if (!parsedAnimeId || earlyVideoStartedRef.current) return;
+    const v = videoRef.current;
+    if (!v) return;
+    const launchEp = launchWatch?.episode ?? parsedEp;
+    const launchTid = launchWatch?.translationId ?? (qpTid ? String(qpTid) : null);
+    const started = tryEarlyVideoStart(v, parsedAnimeId, launchTid, launchEp, inTelegram, {
+      onFirstFrame: () => {
+        earlyVideoStartedRef.current = true;
+        setAwaitingFirstFrame(false);
+      },
+      onAutoplayBlocked: () => {
+        setAwaitingFirstFrame(false);
+        setNeedsPlayTap(true);
+      },
+    });
+    if (started) {
+      earlyVideoStartedRef.current = true;
+      const tid = String(launchTid || "").trim();
+      if (tid) {
+        earlyStartTargetRef.current = { animeId: parsedAnimeId, translationId: tid, episode: launchEp };
+      }
+    }
+  }, [parsedAnimeId, parsedEp, launchWatch, qpTid, inTelegram]);
+
   useEffect(() => {
-    if (!useNativePlayer) return;
     let cancelled = false;
-    void (async () => {
+    const mountPlyr = async () => {
       await import("plyr/dist/plyr.css");
       const mod = await import("plyr");
-      if (cancelled || !videoRef.current) return;
-      if (plyrRef.current) return;
+      if (cancelled || !videoRef.current || plyrRef.current) return;
       plyrRef.current = new mod.default(videoRef.current, {
         controls: [
           "play-large",
@@ -353,14 +728,34 @@ export function KodikPlayer() {
           "settings",
           "fullscreen",
         ],
-        settings: ["speed"],
+        settings: ["quality", "speed"],
+        quality: {
+          ...PLYR_QUALITY_CONFIG,
+          onChange: (q) => switchQualityRef.current(q),
+        },
         speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
+        fullscreen: { enabled: true, fallback: true, iosNative: true, container: ".sh-video-wrap" },
       });
-    })();
+    };
+    const deferPlyr = inTelegram || isMobileStartup();
+    if (!deferPlyr) {
+      void mountPlyr();
+      return () => {
+        cancelled = true;
+      };
+    }
+    const v = videoRef.current;
+    const onPlaying = () => {
+      void mountPlyr();
+    };
+    const fallbackTimer = window.setTimeout(() => void mountPlyr(), 2000);
+    if (v) v.addEventListener("playing", onPlaying, { once: true });
     return () => {
       cancelled = true;
+      clearTimeout(fallbackTimer);
+      if (v) v.removeEventListener("playing", onPlaying);
     };
-  }, [useNativePlayer]);
+  }, [inTelegram]);
 
   useEffect(() => {
     return () => {
@@ -381,37 +776,45 @@ export function KodikPlayer() {
 
   const loadEpisodes = useCallback(
     async (id: number, tid: string) => {
+      const key = `${id}:${tid}`;
+      const cached = cacheGet(episodesCacheRef.current, key);
+      if (cached) {
+        setEpisodes(cached);
+        return cached;
+      }
       setStatus("получаю /episodes (список серий)…");
       const eps = (await apiJson(
         `/api/v1/anime/${encodeURIComponent(id)}/episodes?provider=kodik&translation_id=${encodeURIComponent(tid)}`,
       )) as EpisodesPayload;
       setEpisodes(eps);
+      cacheSet(episodesCacheRef.current, key, eps, CACHE_TTL_EPISODES_MS);
       return eps;
     },
     [apiJson, setStatus],
   );
 
+  /** Записываем watch ВСЕГДА — независимо от наличия translation_id. */
   const applyBootstrapWatch = useCallback(
-    (w: WatchPayload): string | null => {
+    (w: WatchPayload): { fallbackTid: string | null; blocked: boolean } => {
       setWatch(w);
       if (w?.unavailable_reason === "geo") {
         setStatus("Kodik geo-блокирован для этого тайтла в текущей сети/регионе.", { error: true });
         setGeoBlocked(true);
-        return null;
+        return { fallbackTid: null, blocked: true };
       }
       if (w?.unavailable_reason === "not_configured" || w?.unavailable_reason === "init") {
         setGeoBlocked(false);
         const hint =
           typeof w.message === "string" && w.message.trim()
             ? w.message.trim()
-            : "Kodik не подключён к этому серверу: озвучки и видео недоступны. Откройте каталог на главной — поиск через Shikimori работает без Kodik.";
+            : "Kodik не подключён к этому серверу: озвучки и видео недоступны.";
         setStatus(hint, { error: false });
         setTranslationId(null);
         setEpisodes(null);
-        return null;
+        return { fallbackTid: null, blocked: true };
       }
       setGeoBlocked(false);
-      return pickFirstTranslationId(w);
+      return { fallbackTid: pickFirstTranslationId(w), blocked: false };
     },
     [setStatus],
   );
@@ -421,14 +824,23 @@ export function KodikPlayer() {
       const w = data.watch as WatchPayload;
       const title = typeof data.page_title === "string" ? data.page_title.trim() : "";
       if (title) setAnimeTitle(title);
-      let tid =
-        (typeof data.translation_id === "string" && data.translation_id.trim()) ||
-        applyBootstrapWatch(w);
+      const { fallbackTid, blocked } = applyBootstrapWatch(w);
+      if (blocked) return null;
+      const fromServer =
+        typeof data.translation_id === "string" && data.translation_id.trim()
+          ? data.translation_id.trim()
+          : null;
+      let tid = fromServer || fallbackTid;
       if (!tid) return null;
       const ids = new Set(
         (w.translations || []).filter((t) => translationRowHasId(t)).map((t) => translationRowIdString(t)),
       );
-      tid = preferredTid && ids.has(preferredTid) ? preferredTid : tid;
+      if (preferredTid && ids.has(preferredTid)) {
+        tid = preferredTid;
+      } else {
+        const forEp = pickTranslationForEpisode(w, ep);
+        if (forEp && ids.has(forEp)) tid = forEp;
+      }
       setTranslationId(tid);
       setEpisode(ep);
       if (data.episodes && typeof data.episodes === "object") {
@@ -441,26 +853,33 @@ export function KodikPlayer() {
     [applyBootstrapWatch],
   );
 
+  /** Dedup in-flight /kodik/link, чтобы быстрые клики не плодили дубликаты запросов. */
+  const linkInflightRef = useRef<Map<string, Promise<KodikLinkResponse | null>>>(new Map());
   const fetchKodikLinkQuiet = useCallback(
     async (id: number, tid: string, ep: number): Promise<KodikLinkResponse | null> => {
-      try {
-        return (await apiJson(
-          `/api/v1/anime/${encodeURIComponent(id)}/kodik/link?episode=${encodeURIComponent(ep)}&translation_id=${encodeURIComponent(tid)}`,
-        )) as KodikLinkResponse;
-      } catch {
-        return null;
-      }
+      const key = `${id}:${tid}:${ep}`;
+      const cached = cacheGet(linkCache, key);
+      if (cached?.player_url) return cached;
+      const inflight = linkInflightRef.current.get(key);
+      if (inflight) return inflight;
+      const p = (async () => {
+        try {
+          const clientQ = getSutekiApiClient();
+          const linkPath = `/api/v1/anime/${encodeURIComponent(id)}/kodik/link?episode=${encodeURIComponent(ep)}&translation_id=${encodeURIComponent(tid)}${clientQ ? `&client=${encodeURIComponent(clientQ)}` : ""}`;
+          const out = (await apiJson(linkPath)) as KodikLinkResponse;
+          if (out?.player_url) cacheSet(linkCache, key, out, CACHE_TTL_LINK_MS);
+          return out;
+        } catch {
+          return null;
+        } finally {
+          linkInflightRef.current.delete(key);
+        }
+      })();
+      linkInflightRef.current.set(key, p);
+      return p;
     },
     [apiJson],
   );
-
-  useEffect(() => {
-    linkPrefetchRef.current = null;
-    if (!parsedAnimeId) return;
-    const pref = qpTid?.trim();
-    if (!pref) return;
-    linkPrefetchRef.current = fetchKodikLinkQuiet(parsedAnimeId, pref, parsedEp);
-  }, [parsedAnimeId, qpTid, parsedEp, fetchKodikLinkQuiet]);
 
   /** Один быстрый запрос bootstrap (без /kodik/link). */
   const bootstrapAnime = useCallback(
@@ -514,120 +933,245 @@ export function KodikPlayer() {
     setSelectedQuality(current);
   }, []);
 
-  const tryFastKodikIframe = useCallback(
-    (w: WatchPayload | null, tid: string, ep: number): boolean => {
-      if (useNativePlayer) return false;
-      const base = w && typeof w.player_url === "string" ? w.player_url.trim() : "";
-      if (!base) return false;
-      const embedUrl = buildKodikEmbedWatchUrl(base, ep, tid);
-      if (!embedUrl) return false;
-      destroyHls();
-      setEmbedSrc(embedUrl);
-      setEmbedAvailable(true);
-      setHlsMode(false);
-      setHlsNativeQualityLock(false);
-      setVideoErr(null);
-      try {
-        videoRef.current?.pause();
-      } catch {
-        /* */
-      }
-      setStatus("готово (плеер Kodik).");
-      return true;
-    },
-    [destroyHls, setStatus, useNativePlayer],
-  );
-
-  const enrichFromKodikLink = useCallback((link: KodikLinkResponse) => {
-    setSkipMarkers(pickSkipMarkersFromKodikLink(link));
-    const mp4 = typeof link.player_url === "string" ? link.player_url.trim() : "";
-    if (mp4) setRawMp4(mp4);
-    const emb = typeof link.kodik_embed_url === "string" ? link.kodik_embed_url.trim() : "";
-    if (emb) setEmbedSrc(emb);
-  }, []);
-
   const playStream = useCallback(
-    async (opts: {
-      animeId: number;
-      translationId: string;
-      episode: number;
-      resumeAfterLoadSec?: number | null;
-      preloaded?: KodikLinkResponse | null;
-    }) => {
-      const { animeId: id, translationId: tid, episode: ep, resumeAfterLoadSec, preloaded } = opts;
-      const resumeSec =
+    async (opts: PlayStreamOptions) => {
+      const {
+        animeId: id,
+        translationId: tid,
+        episode: ep,
+        resumeAfterLoadSec,
+        savedResumeSec,
+        preloaded,
+        bootstrapMs = 0,
+        staleLinkRetry = false,
+        forceMp4 = false,
+      } = opts;
+      if (!staleLinkRetry) {
+        staleLinkRetryCountRef.current = 0;
+      }
+      const reqId = ++playReqIdRef.current;
+      const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const trace: StartupTrace = {
+        bootstrapMs: bootstrapMs,
+        linkMs: 0,
+        manifestMs: 0,
+        firstFrameMs: 0,
+        firstPlayMs: 0,
+        mode: "MP4",
+        net: getStartupNetworkHints().label,
+        client: startupClientLabel(inTelegram),
+      };
+      const netHints = getStartupNetworkHints();
+      trace.net = netHints.label;
+      const mp4FirstMode = shouldMp4FirstStart(inTelegram, netHints);
+      const directMp4 = shouldDirectMp4Url(inTelegram);
+      const persistedResume = readResumeSec(id, tid, ep);
+      const liveResume =
         resumeAfterLoadSec != null && Number.isFinite(resumeAfterLoadSec) && resumeAfterLoadSec > 0.25
           ? resumeAfterLoadSec
           : null;
-      setVideoErr(null);
-      setBusy(true);
-      try {
-        if (!preloaded && !useNativePlayer && watch && tryFastKodikIframe(watch, tid, ep)) {
-          setBusy(false);
-          void fetchKodikLinkQuiet(id, tid, ep).then((link) => {
-            if (link) enrichFromKodikLink(link);
-          });
-          return;
-        }
+      const savedResume =
+        savedResumeSec != null && Number.isFinite(savedResumeSec) && savedResumeSec > 0.25
+          ? savedResumeSec
+          : null;
+      const resumeSec = liveResume ?? persistedResume ?? savedResume;
+      const hasResume = resumeSec != null && resumeSec > 0.25;
+      if (hasResume) {
+        setResumeHintSec(Math.floor(resumeSec));
+        setResumeHintEpisode(ep);
+      } else if (!staleLinkRetry) {
+        setResumeHintSec(null);
+        setResumeHintEpisode(null);
+      }
+      if (!earlyStartMatches(id, tid, ep)) {
+        earlyVideoStartedRef.current = false;
+        earlyStartTargetRef.current = null;
+      }
 
+      const publishStartupTrace = (partial?: Partial<StartupTrace>) => {
+        if (partial) Object.assign(trace, partial);
+        const line = formatStartupTrace(trace);
+        setStartupBreakdown(line);
+        if (showDebug || showStartupTrace) logStartupTrace(trace);
+      };
+      publishStartupTraceRef.current = publishStartupTrace;
+
+      setVideoErr(null);
+      setNeedsPlayTap(false);
+      setBusy(true);
+      const skipFullscreenLoader = Boolean(
+        preloaded?.player_url && earlyStartMatches(id, tid, ep),
+      );
+      if (!skipFullscreenLoader) setAwaitingFirstFrame(true);
+      try {
+        /* Авто-fallback на кэш: если caller не передал preloaded, но link уже свежий в LRU —
+           стартуем мгновенно, без сетевого RTT. */
+        const cachedLink = preloaded ?? (id && tid ? cacheGet(linkCache, `${id}:${tid}:${ep}`) : null);
         const out =
-          preloaded ??
+          cachedLink ??
           ((await (async () => {
             setStatus("запрашиваю /kodik/link…");
-            return apiJson(
-              `/api/v1/anime/${encodeURIComponent(id)}/kodik/link?episode=${encodeURIComponent(ep)}&translation_id=${encodeURIComponent(tid)}`,
-            );
+            const clientQ = getSutekiApiClient();
+            const linkPath = `/api/v1/anime/${encodeURIComponent(id)}/kodik/link?episode=${encodeURIComponent(ep)}&translation_id=${encodeURIComponent(tid)}${clientQ ? `&client=${encodeURIComponent(clientQ)}` : ""}`;
+            return apiJson(linkPath);
           })()) as KodikLinkResponse);
+        if (out?.player_url) {
+          cacheSet(linkCache, `${id}:${tid}:${ep}`, out, CACHE_TTL_LINK_MS);
+          preconnectMediaOrigin(out.player_url);
+          preloadMp4Url(out.player_url);
+        }
+        trace.linkMs = (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
 
-        const needsNativeLibs = useNativePlayer || !(
-          typeof out.kodik_embed_url === "string" && out.kodik_embed_url.trim()
-        );
-        if (needsNativeLibs) void ensureHlsPreloaded();
-
-        setSkipMarkers(pickSkipMarkersFromKodikLink(out));
+        const markersForEp = pickSkipMarkersFromKodikLink(out);
+        setSkipMarkers(markersForEp);
+        openingAutoSkippedRef.current = false;
+        const embedForSkip = typeof out.kodik_embed_url === "string" ? out.kodik_embed_url.trim() : "";
+        if (embedForSkip && !hasAnySkipMarker(markersForEp)) {
+          void fetchKodikSkipMarkersAsync(embedForSkip, apiJson).then((m) => {
+            if (!m || reqId !== playReqIdRef.current) return;
+            setSkipMarkers(m);
+            const vNow = videoRef.current;
+            if (vNow && !openingAutoSkippedRef.current && shouldAutoSkipOpening(m, resumeSec, vNow.currentTime)) {
+              openingAutoSkippedRef.current = true;
+              seekVideoToSec(vNow, m.openingEndSec!);
+            }
+          });
+        }
 
         const mp4 = out && typeof out.player_url === "string" ? out.player_url.trim() : "";
         if (!mp4) {
-          setStatus("В ответе нет player_url.", { error: true });
+          setStatus("Видео недоступно для этой серии.", { error: true });
+          setAwaitingFirstFrame(false);
           return;
         }
-
-        const embedWatch = typeof out.kodik_embed_url === "string" ? out.kodik_embed_url.trim() : "";
-        setEmbedAvailable(Boolean(embedWatch));
 
         destroyHls();
-        setEmbedSrc(null);
 
-        if (embedWatch && !useNativePlayer) {
-          setEmbedSrc(embedWatch);
-          setRawMp4(mp4);
-          setHlsMode(false);
-          setHlsNativeQualityLock(false);
-          try {
-            videoRef.current?.pause();
-          } catch {
-            /* */
-          }
-          setStatus("готово (плеер Kodik).");
+        const v = videoRef.current;
+        if (!v) {
+          setAwaitingFirstFrame(false);
           return;
         }
 
-        const v = videoRef.current;
-        if (!v) return;
-
         const hlsRaw = typeof out.hls_manifest_url === "string" ? out.hls_manifest_url.trim() : "";
-        const preferHls = Boolean(out.prefer_hls) || mp4.includes("/s/m/");
+        const skipHlsOnStart = mp4FirstMode;
+        const tryHls = shouldTryHlsStart(hlsRaw, skipHlsOnStart) && !forceMp4;
+        const startupMp4Target = pickKodikMp4Quality(out, netHints);
+        const startupMp4 = mp4FirstMode ? replaceQualityInUrl(mp4, startupMp4Target) : mp4;
         let startedHls = false;
+        let fallbackReason = "none";
+        const nowMs = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+        let clearFrameWatchdog: () => void = () => {};
+        if (typeof window !== "undefined") {
+          const frameWatchdog = window.setTimeout(() => {
+            if (reqId !== playReqIdRef.current) return;
+            setAwaitingFirstFrame(false);
+          }, firstFrameWatchdogMs(inTelegram));
+          clearFrameWatchdog = () => clearTimeout(frameWatchdog);
+        }
+        const onFirstFrame = () => {
+          clearFrameWatchdog();
+          if (trace.firstFrameMs <= 0) trace.firstFrameMs = nowMs() - startedAt;
+          setAwaitingFirstFrame(false);
+          publishStartupTrace({});
+        };
+        const onCanPlay = () => {
+          /* На iOS буфер до `playing` может занимать 10+ с — убираем полноэкранный лоадер раньше. */
+          if (reqId === playReqIdRef.current) setAwaitingFirstFrame(false);
+        };
+        const tryAutoSkipOpening = () => {
+          const vNow = videoRef.current;
+          if (!vNow || openingAutoSkippedRef.current) return;
+          if (!shouldAutoSkipOpening(markersForEp, resumeSec, vNow.currentTime)) return;
+          openingAutoSkippedRef.current = true;
+          seekVideoToSec(vNow, markersForEp.openingEndSec!);
+        };
+        const onFirstPlay = () => {
+          staleLinkRetryCountRef.current = 0;
+          if (trace.firstPlayMs <= 0) trace.firstPlayMs = nowMs() - startedAt;
+          publishStartupTrace({});
+          tryAutoSkipOpening();
+        };
+        const playbackHooks = {
+          onAutoplayBlocked: () => {
+            trace.autoplayBlocked = true;
+            setAwaitingFirstFrame(false);
+            setNeedsPlayTap(true);
+            publishStartupTrace({});
+          },
+          onFirstFrame: () => {
+            onFirstFrame();
+            tryAutoSkipOpening();
+          },
+          onFirstPlay,
+        };
+        v.addEventListener("canplay", onCanPlay, { once: true });
+        const playOpts = {
+          tryMutedAutoplay: shouldAutoplayMuted(),
+          unmuteAfterAutoplay: true,
+        };
 
         const onVideoError = () => {
+          if (reqId !== playReqIdRef.current) return;
           const err = v.error;
           const code = err && typeof err.code === "number" ? err.code : 0;
           const src = String(v.currentSrc || v.src || "").slice(0, 220);
-          setVideoErr(`Ошибка видео (code=${code}). src=${src || "—"}.`);
-          setStatus(`Ошибка видео (code=${code}). src=${src || "—"}.`, { error: true });
+          if (showDebug) console.warn("video_error", { code, src });
+          const canStaleRetry =
+            STALE_LINK_MEDIA_ERROR_CODES.has(code) && staleLinkRetryCountRef.current < MAX_STALE_LINK_MEDIA_RETRIES;
+          if (canStaleRetry) {
+            staleLinkRetryCountRef.current += 1;
+            const resumeT =
+              Number.isFinite(v.currentTime) && v.currentTime > 0.25 ? v.currentTime : (resumeSec ?? null);
+            linkCache.delete(`${id}:${tid}:${ep}`);
+            setVideoErr(null);
+            setStatus("Ссылка на видео устарела, запрашиваю новую…");
+            destroyHls();
+            v.pause();
+            v.removeAttribute("src");
+            v.load();
+            v.onerror = null;
+            void playStreamRef.current?.({
+              animeId: id,
+              translationId: tid,
+              episode: ep,
+              resumeAfterLoadSec: resumeT,
+              preloaded: null,
+              staleLinkRetry: true,
+              bootstrapMs: 0,
+            });
+            return;
+          }
+          setAwaitingFirstFrame(false);
+          const userMsg = formatVideoError(code);
+          setVideoErr(userMsg);
+          setStatus(userMsg, { error: true });
+        };
+        const startMp4Fallback = (mode: StartupMode = mp4FirstMode ? "mini-fast" : "MP4") => {
+          setHlsMode(false);
+          setupQualityFromLink(out, startupMp4);
+          setStatus(mode === "mini-fast" ? "быстрый старт MP4…" : "переключаюсь на MP4…");
+          setRawMp4(startupMp4);
+          warmMp4HeadWindow(startupMp4, { direct: directMp4, lite: inTelegram });
+          v.pause();
+          v.src = proxifyMediaUrl(startupMp4, { direct: directMp4 });
+          v.load();
+          publishStartupTrace({
+            mode,
+            fallback:
+              fallbackReason !== "none"
+                ? fallbackReason
+                : tryHls
+                  ? undefined
+                  : hlsRaw
+                    ? "hls_skipped"
+                    : "no_hls_manifest",
+          });
+          playVideoAsap(v, resumeSec, playbackHooks, playOpts);
+          v.onerror = onVideoError;
         };
 
-        if (preferHls && hlsRaw) {
+        if (tryHls) {
           setStatus("загружаю HLS…");
           setRawMp4(mp4);
           v.pause();
@@ -641,28 +1185,129 @@ export function KodikPlayer() {
           if (HlsMod.isSupported()) {
             setHlsMode(true);
             setHlsNativeQualityLock(false);
-            const hls = new HlsMod({ ...HLS_VOD_OPTIONS });
+            const hls = new HlsMod({
+              ...HLS_VOD_OPTIONS,
+              ...HLS_INSTANT_START_OPTIONS,
+              abrEwmaDefaultEstimate: netHints.abrEstimate,
+              ...(hasResume ? { startPosition: resumeSec! } : {}),
+            });
             hlsRef.current = hls;
             hls.loadSource(manifestSrc);
             hls.attachMedia(v);
+            let hlsBufferExpanded = false;
+            const onHlsPlayingExpand = () => {
+              if (hlsBufferExpanded || hlsRef.current !== hls) return;
+              hlsBufferExpanded = true;
+              expandHlsBufferAfterPlay(hls);
+              tryAutoSkipOpening();
+            };
+            v.addEventListener("playing", onHlsPlayingExpand, { once: true });
+            const hlsForPlay = hls;
+            let hlsPlayStarted = false;
+            let hlsRecoverCount = 0;
+
+            const failHlsToMp4 = (reason: string) => {
+              if (hlsStartWatchdog != null) {
+                clearTimeout(hlsStartWatchdog);
+                hlsStartWatchdog = null;
+              }
+              if (hlsRef.current === hlsForPlay) {
+                try {
+                  hlsForPlay.destroy();
+                } catch {
+                  /* */
+                }
+                hlsRef.current = null;
+              }
+              fallbackReason = reason;
+              setVideoErr(null);
+              setStatus(
+                hlsPlayStarted ? "HLS: переключаюсь на MP4…" : "Ошибка HLS до старта, переключаюсь на MP4…",
+              );
+              startMp4Fallback(hlsPlayStarted ? "MP4" : mp4FirstMode ? "mini-fast" : "MP4");
+            };
+
+            const restartWithFreshLink = (mp4Only: boolean) => {
+              if (hlsStartWatchdog != null) {
+                clearTimeout(hlsStartWatchdog);
+                hlsStartWatchdog = null;
+              }
+              if (hlsRef.current === hlsForPlay) {
+                try {
+                  hlsForPlay.destroy();
+                } catch {
+                  /* */
+                }
+                hlsRef.current = null;
+              }
+              if (staleLinkRetryCountRef.current >= MAX_STALE_LINK_MEDIA_RETRIES) {
+                failHlsToMp4(mp4Only ? "hls_frag_parse" : "hls_fatal_after_start");
+                return;
+              }
+              staleLinkRetryCountRef.current += 1;
+              linkCache.delete(`${id}:${tid}:${ep}`);
+              const resumeT =
+                Number.isFinite(v.currentTime) && v.currentTime > 0.25 ? v.currentTime : (resumeSec ?? null);
+              setVideoErr(null);
+              setStatus(mp4Only ? "HLS: битый фрагмент, MP4…" : "HLS: обновляю источник…");
+              void playStreamRef.current?.({
+                animeId: id,
+                translationId: tid,
+                episode: ep,
+                resumeAfterLoadSec: resumeT,
+                preloaded: null,
+                staleLinkRetry: true,
+                bootstrapMs: 0,
+                forceMp4: mp4Only,
+              });
+            };
+
+            let hlsStartWatchdog: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+              if (hlsPlayStarted || hlsRef.current !== hlsForPlay) return;
+              try {
+                hlsForPlay.destroy();
+              } catch {
+                /* */
+              }
+              hlsRef.current = null;
+              fallbackReason = "hls_watchdog_timeout";
+              setStatus("HLS долго стартует, переключаюсь на MP4…");
+              startMp4Fallback();
+            }, hasResume ? HLS_START_WATCHDOG_RESUME_MS : HLS_START_WATCHDOG_MS);
+            const kickHlsPlay = () => {
+              if (hlsPlayStarted || hlsRef.current !== hlsForPlay) return;
+              staleLinkRetryCountRef.current = 0;
+              hlsPlayStarted = true;
+              if (hlsStartWatchdog != null) {
+                clearTimeout(hlsStartWatchdog);
+                hlsStartWatchdog = null;
+              }
+              publishStartupTrace({ mode: "HLS" });
+              setStatus("старт HLS…");
+              playVideoAsap(v, resumeSec, playbackHooks, playOpts);
+            };
             hls.on(HlsMod.Events.MANIFEST_PARSED, () => {
+              trace.manifestMs = nowMs() - startedAt;
               const pick = buildHlsQualityPick(hls.levels);
               hlsQualityPickRef.current = pick;
               setQualityOptions(pick.heights);
-              if (pick.levelIdxs.length) {
-                hls.currentLevel = pick.levelIdxs[pick.levelIdxs.length - 1]!;
+              const initialLevelIdx = pickInitialHlsLevelIdx(pick, netHints.maxStartHeight);
+              if (initialLevelIdx != null) {
+                hls.startLevel = initialLevelIdx;
+                hls.currentLevel = initialLevelIdx;
               }
-              setSelectedQuality(pick.heights[pick.heights.length - 1] ?? pick.heights[0] ?? "");
+              if (pick.heights.length) {
+                if (initialLevelIdx != null) {
+                  const oi = pick.levelIdxs.indexOf(initialLevelIdx);
+                  setSelectedQuality(oi >= 0 ? pick.heights[oi] : pick.heights[pick.heights.length - 1]!);
+                } else {
+                  setSelectedQuality(pick.heights[pick.heights.length - 1]!);
+                }
+              }
               setStatus("старт…");
+              // ранний старт: пробуем играть сразу, как только манифест разобран
+              kickHlsPlay();
             });
-            const hlsForPlay = hls;
-            let hlsPlayStarted = false;
-            const kickHlsPlay = () => {
-              if (hlsPlayStarted || hlsRef.current !== hlsForPlay) return;
-              hlsPlayStarted = true;
-              setStatus("готово (HLS).");
-              playVideoAsap(v, resumeSec);
-            };
             hls.on(HlsMod.Events.FRAG_BUFFERED, kickHlsPlay);
             hls.on(HlsMod.Events.BUFFER_APPENDED, kickHlsPlay);
             hls.on(HlsMod.Events.LEVEL_SWITCHED, (_, data) => {
@@ -682,11 +1327,48 @@ export function KodikPlayer() {
               }
             });
             hls.on(HlsMod.Events.ERROR, (_, data) => {
-              if (data.fatal) {
-                const detail = `${data.type} ${data.details}`;
-                setVideoErr(`HLS: ${detail}`);
-                setStatus(`Ошибка HLS: ${detail}`, { error: true });
+              const details = String(data.details || "");
+              const isFragParse =
+                details.includes("fragParsingError") || details.includes("FRAG_PARSING_ERROR");
+              if (showDebug) console.warn("hls_error", data);
+
+              if (!data.fatal) return;
+              if (hlsRef.current !== hlsForPlay) return;
+
+              if (data.type === HlsMod.ErrorTypes.NETWORK_ERROR && hlsRecoverCount < HLS_RECOVER_MAX) {
+                hlsRecoverCount += 1;
+                setStatus(`HLS: сеть, повтор (${hlsRecoverCount})…`);
+                try {
+                  hlsForPlay.startLoad();
+                  return;
+                } catch {
+                  /* fall through */
+                }
               }
+
+              if (data.type === HlsMod.ErrorTypes.MEDIA_ERROR && hlsRecoverCount < HLS_RECOVER_MAX) {
+                hlsRecoverCount += 1;
+                setStatus(`HLS: media recover (${hlsRecoverCount})…`);
+                try {
+                  hlsForPlay.recoverMediaError();
+                  return;
+                } catch {
+                  /* fall through */
+                }
+              }
+
+              // fragParsingError: CDN отдал HTML/битый сегмент или протух URL в m3u8
+              if (isFragParse) {
+                restartWithFreshLink(true);
+                return;
+              }
+
+              if (!hlsPlayStarted) {
+                failHlsToMp4("hls_fatal_before_start");
+                return;
+              }
+
+              restartWithFreshLink(false);
             });
             startedHls = true;
           } else if (v.canPlayType("application/vnd.apple.mpegurl")) {
@@ -697,103 +1379,133 @@ export function KodikPlayer() {
             setSelectedQuality(720);
             v.src = manifestSrc;
             v.load();
+            v.onerror = onVideoError;
             const onCanPlayHls = () => {
-              setStatus("готово (HLS).");
-              playVideoAsap(v, resumeSec);
+              staleLinkRetryCountRef.current = 0;
+              publishStartupTrace({ mode: "HLS(native)" });
+              setStatus("старт HLS (native)…");
+              playVideoAsap(v, resumeSec, playbackHooks, playOpts);
             };
-            v.addEventListener("loadeddata", onCanPlayHls, { once: true });
+            v.addEventListener("loadedmetadata", onCanPlayHls, { once: true });
             startedHls = true;
           }
         }
 
         if (!startedHls) {
-          setHlsMode(false);
-          setupQualityFromLink(out, mp4);
-          setStatus("загружаю MP4…");
-          setRawMp4(mp4);
-          v.pause();
-          v.src = proxifyMediaUrl(mp4);
-          v.load();
-
-          const onMp4Ready = () => {
-            v.removeEventListener("loadeddata", onMp4Ready);
-            setStatus("готово.");
-            playVideoAsap(v, resumeSec);
-          };
-          v.addEventListener("loadeddata", onMp4Ready, { once: true });
-          v.onerror = onVideoError;
+          if (skipHlsOnStart && tryHls) {
+            fallbackReason = "mobile_mp4_first";
+          } else if (hlsRaw && !tryHls) {
+            fallbackReason = "hls_skipped";
+          }
+          startMp4Fallback(skipHlsOnStart ? "mini-fast" : "MP4");
         }
       } catch (e) {
         console.error(e);
-        setStatus(`Не удалось запустить: ${String(e instanceof Error ? e.message : e)}`, { error: true });
+        if (reqId === playReqIdRef.current) {
+          setAwaitingFirstFrame(false);
+          setStatus(formatApiError(e), { error: true });
+        }
       } finally {
-        setBusy(false);
+        if (reqId === playReqIdRef.current) {
+          setBusy(false);
+        }
       }
     },
-    [
-      apiJson,
-      destroyHls,
-      enrichFromKodikLink,
-      ensureHlsPreloaded,
-      fetchKodikLinkQuiet,
-      setStatus,
-      setupQualityFromLink,
-      tryFastKodikIframe,
-      useNativePlayer,
-      watch,
-    ],
+    [apiJson, destroyHls, ensureHlsPreloaded, inTelegram, setStatus, setupQualityFromLink, showDebug, showStartupTrace],
   );
 
+  useEffect(() => {
+    playStreamRef.current = playStream;
+  }, [playStream]);
+
   const loadAnimeAndPlay = useCallback(
-    async (id: number, preferredTid: string | null, ep: number): Promise<string | null> => {
+    async (
+      id: number,
+      preferredTid: string | null,
+      ep: number,
+      savedResumeSec: number | null = null,
+    ): Promise<string | null> => {
+      const reqId = ++loadAnimeReqIdRef.current;
+      const bootstrapStartedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
       setLoadingBootstrap(true);
       setBusy(true);
       setGeoBlocked(false);
+      setTrSearch("");
       setAnimeId(id);
-      void ensureHlsPreloaded();
       try {
         setStatus("загрузка…");
         const pref = preferredTid?.trim() || null;
-        const prefetched =
-          pref &&
-          parsedAnimeId === id &&
-          pref === (qpTid?.trim() || "") &&
-          ep === parsedEp &&
-          linkPrefetchRef.current
-            ? linkPrefetchRef.current
-            : null;
-        linkPrefetchRef.current = null;
-        const [data, linkEarly] = await Promise.all([
-          apiJson(
-            playerBootstrapUrl(id, {
-              translationId: pref,
-              episode: ep,
-              includeLink: false,
-            }),
-          ) as Promise<PlayerBootstrapResponse>,
-          prefetched ?? (pref ? fetchKodikLinkQuiet(id, pref, ep) : Promise.resolve(null)),
-        ]);
-        const w = data.watch as WatchPayload;
+
+        const bootstrapCacheKey = `${id}:${pref || "auto"}:${ep}`;
+        let data = cacheGet(bootstrapCache, bootstrapCacheKey);
+        if (!data) {
+          const warm = warmBootstrap(id, pref, ep);
+          data = warm
+            ? await warm
+            : ((await apiJson(
+                playerBootstrapUrl(id, {
+                  translationId: pref,
+                  episode: ep,
+                  includeLink: true,
+                  client: getSutekiApiClient(),
+                }),
+              )) as PlayerBootstrapResponse);
+          cacheSet(bootstrapCache, bootstrapCacheKey, data, CACHE_TTL_BOOTSTRAP_MS);
+        }
+
+        if (reqId !== loadAnimeReqIdRef.current) return null;
+
         const tid = applyBootstrapData(data, preferredTid, ep);
         if (!tid) return null;
 
-        if (!useNativePlayer && tryFastKodikIframe(w, tid, ep)) {
-          void fetchKodikLinkQuiet(id, tid, ep).then((link) => {
-            if (link) enrichFromKodikLink(link);
-          });
-          return tid;
+        // Link от bootstrap подходит, только если совпал tid и серия.
+        let link: KodikLinkResponse | null = null;
+        const srvLink = data.link as (KodikLinkResponse & { unavailable?: boolean }) | null | undefined;
+        if (
+          srvLink &&
+          !srvLink.unavailable &&
+          typeof srvLink.player_url === "string" &&
+          srvLink.player_url.trim() &&
+          (data.translation_id ? String(data.translation_id) === tid : tid === pref)
+        ) {
+          link = srvLink as KodikLinkResponse;
+          cacheSet(linkCache, `${id}:${tid}:${ep}`, link, CACHE_TTL_LINK_MS);
+          preconnectMediaOrigin(link.player_url);
+          preloadMp4Url(link.player_url);
         }
+        if (!link) {
+          link = await fetchKodikLinkQuiet(id, tid, ep);
+        }
+        if (reqId !== loadAnimeReqIdRef.current) return null;
 
-        const link = linkEarly ?? (await fetchKodikLinkQuiet(id, tid, ep));
+        const bootstrapWatch = data.watch as WatchPayload;
+        const needsEpisodesFetch =
+          !(data.episodes && typeof data.episodes === "object") &&
+          !translationHasSeriesRangeForTranslationId(bootstrapWatch, tid);
+        if (needsEpisodesFetch) void loadEpisodes(id, tid).catch(() => null);
         if (link?.player_url) {
-          await playStream({ animeId: id, translationId: tid, episode: ep, preloaded: link });
+          const bootstrapMs = (typeof performance !== "undefined" ? performance.now() : Date.now()) - bootstrapStartedAt;
+          void playStream({
+            animeId: id,
+            translationId: tid,
+            episode: ep,
+            preloaded: link,
+            bootstrapMs,
+            savedResumeSec,
+          });
         } else {
-          setStatus("Видео недоступно для этой серии.", { error: true });
+          setAwaitingFirstFrame(false);
+          const msg = "Видео недоступно для этой серии.";
+          setVideoErr(msg);
+          setStatus(msg, { error: true });
         }
         return tid;
       } catch (e) {
         console.error(e);
-        setStatus(`Ошибка загрузки: ${String(e instanceof Error ? e.message : e)}`, { error: true });
+        const userMsg = formatApiError(e);
+        setAwaitingFirstFrame(false);
+        setVideoErr(userMsg);
+        setStatus(userMsg, { error: true });
         return null;
       } finally {
         setLoadingBootstrap(false);
@@ -803,13 +1515,10 @@ export function KodikPlayer() {
     [
       apiJson,
       applyBootstrapData,
-      enrichFromKodikLink,
-      ensureHlsPreloaded,
       fetchKodikLinkQuiet,
+      loadEpisodes,
       playStream,
       setStatus,
-      tryFastKodikIframe,
-      useNativePlayer,
     ],
   );
 
@@ -828,28 +1537,43 @@ export function KodikPlayer() {
       setAnimeId(id);
       setTranslationId(tid);
       setEpisode(ep);
-      await playStream({ animeId: id, translationId: tid, episode: ep });
+      replaceUrlAnime(id, ep, tid);
+      const prefetched = cacheGet(linkCache, `${id}:${tid}:${ep}`) ?? null;
+      await playStream({ animeId: id, translationId: tid, episode: ep, preloaded: prefetched });
     },
     [animeId, episode, playStream, setStatus, translationId],
   );
 
   useEffect(() => {
-    if (!parsedAnimeId) return;
-    void loadAnimeAndPlay(parsedAnimeId, qpTid ? String(qpTid) : null, parsedEp).catch((e) => {
-      console.error(e);
-      setStatus(`Ошибка по ссылке: ${String(e instanceof Error ? e.message : e)}`, { error: true });
-    });
-  }, [parsedAnimeId, qpTid, parsedEp, loadAnimeAndPlay, setStatus]);
+    loadAnimeAndPlayRef.current = loadAnimeAndPlay;
+  }, [loadAnimeAndPlay]);
+
+  useEffect(() => {
+    if (!parsedAnimeId || userPickedAnimeRef.current) return;
+    const ep = launchWatch?.episode ?? parsedEp;
+    const tid = launchWatch?.translationId ?? (qpTid ? String(qpTid) : null);
+    void loadAnimeAndPlayRef.current
+      ?.(parsedAnimeId, tid, ep, launchWatch?.savedResumeSec ?? null)
+      .then((resolvedTid) => {
+        if (resolvedTid && launchWatch?.usedSavedEpisode) {
+          replaceUrlAnime(parsedAnimeId, ep, resolvedTid);
+        }
+      })
+      .catch((e) => {
+        console.error(e);
+        setStatus(`Ошибка по ссылке: ${String(e instanceof Error ? e.message : e)}`, { error: true });
+      });
+  }, [parsedAnimeId, qpTid, parsedEp, launchWatch, setStatus]);
 
   const selectTranslation = useCallback(
     (tid: string) => {
       if (!animeId) return;
+      tgHaptic("light");
       void (async () => {
         try {
-          const iframeKodik = !useNativePlayer && Boolean(embedSrc);
           const v = videoRef.current;
           const resumeAfterLoadSec =
-            !iframeKodik && v && Number.isFinite(v.currentTime) && v.currentTime > 0.25 ? v.currentTime : null;
+            v && Number.isFinite(v.currentTime) && v.currentTime > 0.25 ? v.currentTime : null;
           const keepEp = Math.max(1, Math.floor(Number(episode) || 1));
           setTranslationId(tid);
           setEpisode(keepEp);
@@ -865,24 +1589,20 @@ export function KodikPlayer() {
             episode: keepEp,
             resumeAfterLoadSec,
           });
-          await Promise.all([pEpisodes, pPlay]);
+          void pEpisodes;
+          await pPlay;
         } catch (err) {
           console.error(err);
-          setStatus(`Не удалось обновить серии: ${String(err instanceof Error ? err.message : err)}`, {
+          setStatus(formatApiError(err), {
             error: true,
           });
         }
       })();
     },
-    [animeId, embedSrc, episode, loadEpisodes, playStream, setStatus, useNativePlayer, watch],
+    [animeId, episode, loadEpisodes, playStream, setStatus, watch],
   );
 
-  const switchQuality = useCallback(
-    async (nextQ: number) => {
-      if (!useNativePlayer && embedSrc) {
-        setStatus("Качество задаётся в плеере Kodik или переключите «Свой».", { error: false });
-        return;
-      }
+  const switchQuality = useCallback(async function switchQuality(nextQ: number) {
       if (hlsMode) {
         const hls = hlsRef.current;
         if (!hls) {
@@ -905,7 +1625,7 @@ export function KodikPlayer() {
       if (!raw) return;
 
       const nextRaw = replaceQualityInUrl(raw, nextQ);
-      const nextUrl = proxifyMediaUrl(nextRaw);
+      const nextUrl = proxifyMediaUrl(nextRaw, { direct: shouldDirectMp4Url() });
       const curProxied = String(v.currentSrc || v.src || "").trim();
       if (!nextUrl || nextUrl === curProxied) return;
 
@@ -937,12 +1657,28 @@ export function KodikPlayer() {
       };
       v.addEventListener("canplay", onReady);
     },
-    [embedSrc, hlsMode, rawMp4, setStatus, useNativePlayer],
+    [hlsMode, rawMp4, setStatus],
   );
 
-  const kodikFrameMode = !useNativePlayer && Boolean(embedSrc);
+  switchQualityRef.current = (q) => {
+    void switchQuality(q);
+  };
 
-  const qualitySelectDisabled = qualityOptions.length <= 1 || hlsNativeQualityLock || kodikFrameMode;
+  const qualitySelectDisabled = qualityOptions.length <= 1 || hlsNativeQualityLock;
+
+  const activeQuality =
+    selectedQuality !== "" ? selectedQuality : (qualityOptions[0] ?? "");
+
+  useEffect(() => {
+    const plyr = plyrRef.current;
+    if (!plyr) return;
+    const selected = typeof activeQuality === "number" ? activeQuality : undefined;
+    if (qualitySelectDisabled) {
+      syncPlyrQualityMenu(plyr, qualityOptions.length ? qualityOptions : []);
+      return;
+    }
+    syncPlyrQualityMenu(plyr, qualityOptions, selected);
+  }, [activeQuality, qualityOptions, qualitySelectDisabled]);
 
   const activeTranslationLabelForDebug = useMemo(() => {
     const trs = watch && Array.isArray(watch.translations) ? watch.translations : [];
@@ -953,15 +1689,13 @@ export function KodikPlayer() {
   }, [watch, translationId]);
 
   const playbackDebugText = useMemo(() => {
-    if (kodikFrameMode) return "плеер Kodik (iframe) — позицию страница не читает";
     const { current, duration, paused } = playbackDebug;
     const cur = formatClockSec(current);
     const dur = Number.isFinite(duration) && duration > 0 ? formatClockSec(duration) : "…";
     return `${cur} / ${dur}${paused ? " · пауза" : ""}`;
-  }, [kodikFrameMode, playbackDebug]);
+  }, [playbackDebug]);
 
   useEffect(() => {
-    if (kodikFrameMode) return;
     const v = videoRef.current;
     if (!v) return;
 
@@ -1001,7 +1735,7 @@ export function KodikPlayer() {
       v.removeEventListener("durationchange", read);
       v.removeEventListener("emptied", read);
     };
-  }, [kodikFrameMode]);
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -1021,6 +1755,81 @@ export function KodikPlayer() {
     link.href = origin;
     document.head.appendChild(link);
   }, [watch]);
+
+  // Сохранение серии и позиции (секунды) в localStorage
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const id = animeId;
+    const tid = translationId;
+    const ep = episode;
+    if (!id || !tid || !ep) return;
+
+    let lastSaved = 0;
+    const persist = () => {
+      const t = v.currentTime;
+      if (!Number.isFinite(t)) return;
+      const now = Date.now();
+      if (now - lastSaved < 4000) return;
+      lastSaved = now;
+      flushWatchProgress(id, tid, ep, t, v.duration);
+    };
+    const onPause = () => flushWatchProgress(id, tid, ep, v.currentTime, v.duration);
+    const onHide = () => {
+      if (document.visibilityState === "hidden") {
+        flushWatchProgress(id, tid, ep, v.currentTime, v.duration);
+      }
+    };
+    const onEnded = () => flushWatchProgress(id, tid, ep, v.duration, v.duration);
+    v.addEventListener("timeupdate", persist);
+    v.addEventListener("pause", onPause);
+    v.addEventListener("ended", onEnded);
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPause);
+    return () => {
+      flushWatchProgress(id, tid, ep, v.currentTime, v.duration);
+      v.removeEventListener("timeupdate", persist);
+      v.removeEventListener("pause", onPause);
+      v.removeEventListener("ended", onEnded);
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPause);
+    };
+  }, [animeId, translationId, episode]);
+
+  // Прогрев следующей серии: (1) early — через 8с после старта; (2) при 60% длительности.
+  const nextEpisodePrefetchedRef = useRef<string | null>(null);
+  useEffect(() => {
+    nextEpisodePrefetchedRef.current = null;
+  }, [animeId, translationId, episode]);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const id = animeId;
+    const tid = translationId;
+    const ep = episode;
+    if (!id || !tid || !ep) return;
+    const tryPrefetchNext = () => {
+      const key = `${id}:${tid}:${ep + 1}`;
+      if (nextEpisodePrefetchedRef.current === key) return;
+      nextEpisodePrefetchedRef.current = key;
+      void fetchKodikLinkQuiet(id, tid, ep + 1);
+    };
+    /* (1) Early-warm: в TG не делаем — лишняя нагрузка на слабых телефонах. */
+    const earlyTimer = inTelegram ? null : window.setTimeout(tryPrefetchNext, 8000);
+    /* (2) При 60% — пред-прогрев перед переключением по auto-next. */
+    const onTime = () => {
+      const d = v.duration;
+      const t = v.currentTime;
+      if (!Number.isFinite(d) || d <= 0) return;
+      if (t < d * 0.6) return;
+      tryPrefetchNext();
+    };
+    v.addEventListener("timeupdate", onTime);
+    return () => {
+      if (earlyTimer != null) clearTimeout(earlyTimer);
+      v.removeEventListener("timeupdate", onTime);
+    };
+  }, [animeId, translationId, episode, fetchKodikLinkQuiet, inTelegram]);
 
   const onVideoTimelineRefreshed = useCallback(() => {
     const v = videoRef.current;
@@ -1078,18 +1887,7 @@ export function KodikPlayer() {
       setLoadingSearch(true);
       setSearchErr(null);
       try {
-        const payload = (await apiJson(`/api/v1/anime/search?q=${encodeURIComponent(q)}&limit=12`)) as {
-          results?: unknown;
-        };
-        const results = payload && Array.isArray(payload.results) ? (payload.results as AnimeSearchRow[]) : [];
-        const mapped = results
-          .filter((r) => r && typeof r === "object" && Number((r as AnimeSearchRow).anime_id) > 0)
-          .map((r) => ({
-            anime_id: Number((r as AnimeSearchRow).anime_id),
-            title: String((r as AnimeSearchRow).title || ""),
-            poster: (r as AnimeSearchRow).poster ?? null,
-            original_title: (r as AnimeSearchRow).original_title ?? null,
-          }));
+        const mapped = await searchAnime(q, 12);
         if (reqId !== searchReqIdRef.current) return;
         setSearchResults(mapped);
         setSearchDone(true);
@@ -1106,8 +1904,9 @@ export function KodikPlayer() {
   );
 
   const searchNow = useCallback(() => {
+    dismissSearchKeyboard();
     void runSearch(query || defaultQ);
-  }, [defaultQ, query, runSearch]);
+  }, [defaultQ, dismissSearchKeyboard, query, runSearch]);
 
   const onQueryChange = useCallback((nextRaw: string) => {
     const next = nextRaw;
@@ -1137,20 +1936,40 @@ export function KodikPlayer() {
     async (row: AnimeSearchRow) => {
       const newId = Number(row.anime_id);
       if (!Number.isFinite(newId) || newId <= 0) return;
+      userPickedAnimeRef.current = true;
       setBusy(true);
       setVideoErr(null);
+      setSearchResults([]);
+      setSearchDone(false);
       try {
+        setTrSearch("");
         setAnimeTitle(row.title || "");
-        setTranslationId(null);
-        await loadAnimeAndPlay(newId, null, 1);
+        setWatch(null);
+        setEpisodes(null);
+        setChronology([]);
+        const launch = resolveLaunchWatch(newId, { explicitEpisode: false, urlTranslationId: null });
+        setEpisode(launch.episode);
+        setTranslationId(launch.translationId);
+        void warmBootstrap(newId, launch.translationId, launch.episode);
+        if (animeId != null && Number(animeId) === newId && translationId) {
+          await playSelected(launch.episode);
+          replaceUrlAnime(newId, launch.episode, translationId);
+          return;
+        }
+        const tid = await loadAnimeAndPlay(newId, launch.translationId, launch.episode, launch.savedResumeSec);
+        if (!tid) {
+          setStatus("Не удалось открыть тайтл.", { error: true });
+          return;
+        }
+        replaceUrlAnime(newId, launch.episode, tid);
       } catch (e) {
         console.error(e);
-        setVideoErr(String(e instanceof Error ? e.message : e));
+        setVideoErr(formatApiError(e));
       } finally {
         setBusy(false);
       }
     },
-    [loadAnimeAndPlay],
+    [animeId, loadAnimeAndPlay, playSelected, setStatus, translationId],
   );
 
   useEffect(() => {
@@ -1159,10 +1978,11 @@ export function KodikPlayer() {
       return;
     }
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setChronologyLoading(true);
-    setChronologyErr(null);
-    void (async () => {
+    let delayedRun: ReturnType<typeof setTimeout> | null = null;
+    const runChronologyFetch = async () => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setChronologyLoading(true);
+      setChronologyErr(null);
       try {
         const payload = (await apiJson(`/api/v1/anime/${encodeURIComponent(id)}/chronology`)) as {
           results?: unknown;
@@ -1189,27 +2009,57 @@ export function KodikPlayer() {
       } finally {
         if (!cancelled) setChronologyLoading(false);
       }
-    })();
+    };
+    if (inTelegram) delayedRun = setTimeout(() => void runChronologyFetch(), 4000);
+    else void runChronologyFetch();
     return () => {
       cancelled = true;
+      if (delayedRun != null) clearTimeout(delayedRun);
     };
-  }, [animeId, apiJson]);
+  }, [animeId, apiJson, inTelegram]);
 
   const navOpts = useMemo(() => episodeOptions.filter((x) => !x.disabled), [episodeOptions]);
+  const navEpisodeNumbers = useMemo(
+    () => navOpts.map((o) => Math.floor(Number(o.value) || 0)).filter((n) => Number.isFinite(n) && n > 0),
+    [navOpts],
+  );
+  const currentEpisodeIndex = useMemo(
+    () => navEpisodeNumbers.findIndex((n) => n === Math.floor(Number(episode) || 1)),
+    [episode, navEpisodeNumbers],
+  );
+  const canPrevEpisode = currentEpisodeIndex > 0;
+  const canNextEpisode = currentEpisodeIndex >= 0 && currentEpisodeIndex < navEpisodeNumbers.length - 1;
 
-  const hudText = useMemo(() => {
-    const title = animeTitle || (animeId ? `#${animeId}` : "—");
-    const tr = translationsFiltered.find((x) => translationRowIdString(x) === String(translationId));
-    const trName = tr ? formatTranslationLabel(tr) : translationId ? `id=${translationId}` : "—";
-    const tid = trName ? `озвучка: ${trName}` : "озвучка —";
-    const ep = episode ? `серия ${episode}` : "серия —";
-    return `${title} • ${tid} • ${ep}`;
-  }, [animeId, animeTitle, episode, translationId, translationsFiltered]);
+  const scrollEpisodeButtonIntoView = useCallback((n: number) => {
+    if (typeof document === "undefined") return;
+    const el = document.getElementById(`ep-strip-btn-${n}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, []);
 
   const onPickEpisode = useCallback((n: number) => {
     const ep = Number(n) || 1;
+    if (!Number.isFinite(ep) || ep < 1) return;
+    if (loadingBootstrap) return;
+    if (Math.floor(Number(episode) || 1) === ep) return;
+    tgHaptic("light");
+    setEpisodeJumpInput(String(ep));
+    scrollEpisodeButtonIntoView(ep);
     void playSelected(ep);
-  }, [playSelected]);
+  }, [episode, loadingBootstrap, playSelected, scrollEpisodeButtonIntoView]);
+
+  const goPrevEpisode = useCallback(() => {
+    if (!canPrevEpisode) return;
+    const target = navEpisodeNumbers[currentEpisodeIndex - 1];
+    if (!target) return;
+    onPickEpisode(target);
+  }, [canPrevEpisode, currentEpisodeIndex, navEpisodeNumbers, onPickEpisode]);
+
+  const goNextEpisode = useCallback(() => {
+    if (!canNextEpisode) return;
+    const target = navEpisodeNumbers[currentEpisodeIndex + 1];
+    if (!target) return;
+    onPickEpisode(target);
+  }, [canNextEpisode, currentEpisodeIndex, navEpisodeNumbers, onPickEpisode]);
 
   const showEpisodeJumpHint = useCallback((text: string, error: boolean) => {
     if (episodeJumpHintTimerRef.current) clearTimeout(episodeJumpHintTimerRef.current);
@@ -1218,12 +2068,6 @@ export function KodikPlayer() {
       setEpisodeJumpHint(null);
       episodeJumpHintTimerRef.current = null;
     }, 3200);
-  }, []);
-
-  const scrollEpisodeButtonIntoView = useCallback((n: number) => {
-    if (typeof document === "undefined") return;
-    const el = document.getElementById(`ep-strip-btn-${n}`);
-    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, []);
 
   const goToEpisodeFromInput = useCallback(() => {
@@ -1284,60 +2128,152 @@ export function KodikPlayer() {
 
   const episodesMeta = loadingBootstrap ? "…" : `${navOpts.length} серий`;
 
+  useEffect(() => {
+    if (loadingBootstrap || showEpisodesLoading || episodeOptions.length === 0) return;
+    scrollEpisodeButtonIntoView(Math.floor(Number(episode) || 1));
+  }, [episode, episodeOptions.length, loadingBootstrap, scrollEpisodeButtonIntoView, showEpisodesLoading]);
+
+  /* Полноэкранный лоадер только пока нет ссылки; буфер видео — лёгкий индикатор (buffering). */
+  const showLoadOverlay = (busy || loadingBootstrap) && !needsPlayTap;
+  const showVideoBufferHint = awaitingFirstFrame && !loadingBootstrap && !busy && !needsPlayTap;
+
   const kodikNotConfigured =
     watch?.unavailable_reason === "not_configured" || watch?.unavailable_reason === "init";
+
+  const translationsCount = useMemo(() => {
+    const trs = watch && Array.isArray(watch.translations) ? watch.translations : [];
+    return trs.filter((t) => translationRowHasId(t)).length;
+  }, [watch]);
+
+  const chronologyTv = useMemo(() => chronology.filter((c) => isTvChronologyKind(c.kind)), [chronology]);
+  const chronologyOther = useMemo(() => chronology.filter((c) => !isTvChronologyKind(c.kind)), [chronology]);
+
+  const renderChronologyStrip = (items: ChronologyItem[], title: string, key: string) => {
+    if (!items.length) return null;
+    return (
+      <div className={`sh-card sh-chronology sh-chronology-${key}`} aria-label={title}>
+        <div className="sh-chronology-head">
+          <strong>{title}</strong>
+          <div className="sh-chronology-meta">{items.length}</div>
+        </div>
+        <div className="sh-chronology-strip" role="list" aria-label={title}>
+          {items.map((c) => {
+            const cardTitle = c.title || `#${c.anime_id}`;
+            const poster = c.poster;
+            const active = animeId != null && Number(animeId) === Number(c.anime_id);
+            const meta = [c.kind ? String(c.kind).toUpperCase() : null, c.year ? String(c.year) : null]
+              .filter(Boolean)
+              .join(" • ");
+            return (
+              <button
+                key={`ch-${key}-${c.anime_id}`}
+                type="button"
+                role="listitem"
+                className={`sh-chronology-card${active ? " active" : ""}`}
+                onClick={() =>
+                  void openAnimeFromSearchResult({
+                    anime_id: c.anime_id,
+                    title: cardTitle,
+                    poster: poster ?? null,
+                    original_title: c.original_title ?? null,
+                  })
+                }
+                disabled={loadingBootstrap}
+                title={cardTitle}
+              >
+                <span className="sh-chronology-poster" aria-hidden>
+                  {poster ? (
+                    <img src={poster} alt="" width={52} height={74} className="sh-chronology-img" />
+                  ) : (
+                    <span className="sh-chronology-poster-ph" />
+                  )}
+                </span>
+                <span className="sh-chronology-main">
+                  <span className="sh-chronology-title">{cardTitle}</span>
+                  {meta ? <span className="sh-chronology-sub">{meta}</span> : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const showTranslationsLoading =
+    !kodikNotConfigured &&
+    !geoBlocked &&
+    (loadingBootstrap || (!watch && Boolean(animeId)));
+  const showTranslationsEmpty =
+    !kodikNotConfigured &&
+    !geoBlocked &&
+    !loadingBootstrap &&
+    watch != null &&
+    translationsCount === 0;
 
   return (
     <main className="sh-page" aria-busy={busy || loadingBootstrap || loadingSearch}>
       <div className="sh-shell">
-        <div className="sh-card sh-header">
-          <nav className="sh-nav" aria-label="Меню">
-            <a href="/" className="sh-nav-link">
-              Главная
-            </a>
-          </nav>
-          <p className="sh-title">Просмотр</p>
-          <p className="sh-subtitle">
-            <a href="/">Главная</a>
-          </p>
+        <div className="sh-card sh-search" role="search">
+          <div className="sh-search-top">
+            <div className="sh-search-brand" aria-hidden>
+              <span className="sh-brand-suteki">SUTEKI</span>
+              <span className="sh-brand-hub">hub</span>
+            </div>
+            {!inTelegram ? (
+              <button
+                type="button"
+                className="sh-home-link"
+                onClick={() => pushLaunchShikiId(null)}
+              >
+                ← Главная
+              </button>
+            ) : null}
+          </div>
+          {animeTitle ? <p className="sh-search-anime">{animeTitle}</p> : null}
+          <div className="sh-search-row">
+            <input
+              type="search"
+              className="sh-input"
+              placeholder="Поиск аниме…"
+              value={query}
+              inputMode="search"
+              enterKeyHint="search"
+              autoComplete="off"
+              onChange={(e) => onQueryChange(e.target.value)}
+              onFocus={onSearchFocus}
+              onBlur={() => {
+                onSearchBlur();
+                setQuery((q0) => normalizeSearchQuery(q0));
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  searchNow();
+                }
+              }}
+              aria-label="Поиск аниме"
+            />
+            <button
+              type="button"
+              className={`sh-btn primary${loadingSearch ? " loading" : ""}`}
+              onClick={searchNow}
+              disabled={loadingSearch || busy}
+            >
+              {loadingSearch ? <span className="sh-spinner" aria-hidden /> : null}
+              Найти
+            </button>
+          </div>
         </div>
 
         {kodikNotConfigured ? (
           <div className="sh-card sh-kodik-notice" role="status">
             <p className="sh-kodik-notice-title">Kodik не подключён к API</p>
             <p className="sh-kodik-notice-text">
-              Здесь не будет озвучек и серий, пока на сервере не реализованы эндпоинты Kodik. Для просмотра описаний и
-              постеров перейдите на{" "}
-              <a href="/">главную</a>.
+              Здесь не будет озвучек и серий, пока на сервере не реализованы эндпоинты Kodik.
             </p>
           </div>
         ) : null}
-
-        <div className="sh-card sh-toolbar">
-          <input
-            className="sh-input"
-            placeholder='Поиск аниме (например: "наруто")'
-            value={query}
-            onChange={(e) => onQueryChange(e.target.value)}
-            onBlur={() => setQuery((q0) => normalizeSearchQuery(q0))}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                searchNow();
-              }
-            }}
-            aria-label="Поиск аниме"
-          />
-          <button
-            type="button"
-            className={`sh-btn primary${loadingSearch ? " loading" : ""}`}
-            onClick={searchNow}
-            disabled={loadingSearch || busy}
-          >
-            {loadingSearch ? <span className="sh-spinner" aria-hidden /> : null}
-            Найти
-          </button>
-        </div>
 
         {searchErr ? (
           <div className="sh-card sh-search-feedback">
@@ -1395,13 +2331,17 @@ export function KodikPlayer() {
         <div className="sh-card sh-player-card">
           <div className="sh-stage sh-stage--mylist-collapsed">
             <div className="sh-video-pane">
-              <div className={`sh-video-wrap${kodikFrameMode ? " sh-video-wrap-kodik" : ""}`}>
+              <div className="sh-video-wrap">
+                <div className="sh-current-episode-badge" aria-live="polite">
+                  Серия {Math.max(1, Math.floor(Number(episode) || 1))}
+                </div>
                 <video
                   ref={videoRef}
                   id="video"
                   playsInline
+                  autoPlay
+                  muted={shouldAutoplayMuted()}
                   preload="auto"
-                  className={kodikFrameMode ? "sh-video-backing" : undefined}
                   aria-label="Видео эпизода"
                   onWaiting={() => setBuffering(true)}
                   onPlaying={() => setBuffering(false)}
@@ -1409,115 +2349,278 @@ export function KodikPlayer() {
                   onLoadedMetadata={onVideoTimelineRefreshed}
                   onDurationChange={onVideoTimelineRefreshed}
                 />
-                {kodikFrameMode && embedSrc ? (
-                  <iframe
-                    key={embedSrc}
-                    title="Kodik"
-                    className="sh-kodik-embed"
-                    src={embedSrc}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
-                    allowFullScreen
-                    referrerPolicy="strict-origin-when-cross-origin"
-                  />
+                {showVideoBufferHint ? (
+                  <div className="sh-video-buffer-hint" role="status" aria-live="polite">
+                    <span className="sh-video-buffer-spinner" aria-hidden />
+                    <span>Буферизация…</span>
+                  </div>
                 ) : null}
-                {buffering && !kodikFrameMode ? <div className="sh-buffer-overlay" aria-hidden /> : null}
-
-                <div className="sh-hud-top">
-                  <div className="sh-hud-pill">
-                    <span id="hudText">{hudText}</span>
-                  </div>
-                  <div className="sh-hud-controls">
-                    <div className="sh-player-mode-toggle" role="group" aria-label="Режим плеера">
-                      <button
-                        type="button"
-                        className={`sh-mini-btn${!useNativePlayer && embedAvailable ? " sh-mini-btn-active" : ""}`}
-                        disabled={busy || !embedAvailable}
-                        title={
-                          !embedAvailable
-                            ? "Встроенный Kodik недоступен для этого ответа"
-                            : "Плеер Kodik (iframe) — без прокси API"
-                        }
-                        onClick={() => {
-                          setUseNativePlayer(false);
-                          void playSelected();
-                        }}
-                      >
-                        Kodik
-                      </button>
-                      <button
-                        type="button"
-                        className={`sh-mini-btn${useNativePlayer ? " sh-mini-btn-active" : ""}`}
-                        disabled={busy}
-                        title="Свой плеер Plyr + HLS (по умолчанию: качество, OP/ED)"
-                        onClick={() => {
-                          setUseNativePlayer(true);
-                          void playSelected();
-                        }}
-                      >
-                        Свой
-                      </button>
+                {(showLoadOverlay) ? (
+                  <div className="sh-anime-load-overlay" role="status" aria-live="polite" aria-busy="true">
+                    <div className="sh-anime-load-bg" aria-hidden />
+                    <div className="sh-anime-load-sparkles" aria-hidden>
+                      <span className="sh-anime-spark sh-anime-spark--1" />
+                      <span className="sh-anime-spark sh-anime-spark--2" />
+                      <span className="sh-anime-spark sh-anime-spark--3" />
+                      <span className="sh-anime-spark sh-anime-spark--4" />
+                      <span className="sh-anime-spark sh-anime-spark--5" />
+                      <span className="sh-anime-spark sh-anime-spark--6" />
                     </div>
-                    <div className="sh-skip-group">
-                      <button
-                        type="button"
-                        className="sh-mini-btn"
-                        disabled={kodikFrameMode || !skipUi.canOpening}
-                        title={
-                          skipUi.showNoMarkersHint
-                            ? "Kodik не передаёт таймкоды OP/ED в ответе ссылки; без opening_end_sec кнопка неактивна."
-                            : !skipMarkers?.openingEndSec
-                              ? "Нет таймкода конца опенинга"
-                              : "Пропустить опенинг"
-                        }
-                        aria-label="Пропустить опенинг"
-                        onClick={() => skipOpening()}
-                      >
-                        OP
-                      </button>
-                      <button
-                        type="button"
-                        className="sh-mini-btn"
-                        disabled={kodikFrameMode || !skipUi.canEnding}
-                        title={
-                          skipUi.showNoMarkersHint
-                            ? "Kodik не передаёт таймкоды OP/ED в ответе ссылки."
-                            : skipUi.endingNeedsMeta
-                              ? "Дождитесь метаданных длительности (нужен конец ролика для пропуска эндинга)"
-                              : "Пропустить эндинг"
-                        }
-                        aria-label="Пропустить эндинг"
-                        onClick={() => skipEnding()}
-                      >
-                        ED
-                      </button>
-                      {skipMarkers && skipUi.showNoMarkersHint ? (
-                        <span className="sh-skip-hint" title="В JSON /kodik/link нет полей opening_end_sec / ending_*">
-                          нет таймкодов
-                        </span>
-                      ) : null}
+                    <div className="sh-anime-load-mascot" aria-hidden>
+                      {waitGifFailed ? (
+                        <div className="sh-twan">
+                          <div className="sh-twan-hair-back" />
+                          <div className="sh-twan-neck" />
+                          <div className="sh-twan-face">
+                            <div className="sh-twan-blush sh-twan-blush--l" />
+                            <div className="sh-twan-blush sh-twan-blush--r" />
+                            <div className="sh-twan-eye sh-twan-eye--l" />
+                            <div className="sh-twan-eye sh-twan-eye--r" />
+                            <div className="sh-twan-mouth" />
+                          </div>
+                          <div className="sh-twan-hair-front" />
+                          <div className="sh-twan-bow">
+                            <span className="sh-twan-bow-knot" />
+                          </div>
+                          <div className="sh-twan-body" />
+                        </div>
+                      ) : (
+                        <img
+                          className="sh-wait-mascot-gif sh-wait-mascot-gif--hero"
+                          src={waitGifUrl}
+                          alt=""
+                          width={200}
+                          height={112}
+                          decoding="async"
+                          fetchPriority="high"
+                          onError={() => setWaitGifFailed(true)}
+                        />
+                      )}
                     </div>
-                    <select
-                      id="quality"
-                      className="sh-quality-select"
-                      disabled={qualitySelectDisabled}
-                      value={selectedQuality === "" ? String(qualityOptions[0] ?? "") : String(selectedQuality)}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        if (v) void switchQuality(v);
-                      }}
-                      aria-label="Качество видео"
-                    >
-                      {qualityOptions.map((q) => (
-                        <option key={q} value={q}>
-                          {q}p
-                        </option>
-                      ))}
-                    </select>
+                    <p key={`ld-${loadPhraseI}`} className="sh-anime-load-caption sh-wait-caption-tick">
+                      {WAIT_PHRASES_LOADER[loadPhraseI % WAIT_PHRASES_LOADER.length]}
+                    </p>
+                    <div className="sh-anime-load-dots" aria-hidden>
+                      <span />
+                      <span />
+                      <span />
+                    </div>
                   </div>
-                </div>
+                ) : null}
+                {buffering ? (
+                  <div className="sh-buffer-overlay" role="status" aria-live="polite" aria-busy="true">
+                    <div className="sh-buffer-overlay__bg" />
+                    <div className="sh-buffer-overlay__sparkles">
+                      <span className="sh-buf-spark sh-buf-spark--1" />
+                      <span className="sh-buf-spark sh-buf-spark--2" />
+                      <span className="sh-buf-spark sh-buf-spark--3" />
+                    </div>
+                    <div className="sh-buffer-overlay__inner">
+                      {waitGifFailed ? (
+                        <div className="sh-buf-chibi">
+                          <div className="sh-buf-hair-back" />
+                          <div className="sh-buf-face">
+                            <div className="sh-buf-blush sh-buf-blush--l" />
+                            <div className="sh-buf-blush sh-buf-blush--r" />
+                            <div className="sh-buf-eye sh-buf-eye--l" />
+                            <div className="sh-buf-eye sh-buf-eye--r" />
+                            <div className="sh-buf-mouth" />
+                          </div>
+                          <div className="sh-buf-hair-front" />
+                          <div className="sh-buf-bow" />
+                        </div>
+                      ) : (
+                        <img
+                          className="sh-wait-mascot-gif sh-wait-mascot-gif--buf"
+                          src={waitGifUrl}
+                          alt=""
+                          width={120}
+                          height={68}
+                          decoding="async"
+                          onError={() => setWaitGifFailed(true)}
+                        />
+                      )}
+                      <span key={`bf-${bufPhraseI}`} className="sh-buf-caption sh-wait-caption-tick">
+                        {WAIT_PHRASES_BUFFER[bufPhraseI % WAIT_PHRASES_BUFFER.length]}
+                      </span>
+                      <div className="sh-buf-dots">
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                {needsPlayTap ? (
+                  <button
+                    type="button"
+                    className="sh-play-tap-overlay"
+                    aria-label="Начать воспроизведение"
+                    onClick={() => {
+                      setNeedsPlayTap(false);
+                      const v = videoRef.current;
+                      if (v) {
+                        v.muted = false;
+                        void v.play().catch(() => setNeedsPlayTap(true));
+                      } else {
+                        void playSelected();
+                      }
+                    }}
+                  >
+                    <span className="sh-play-tap-icon" aria-hidden>
+                      ▶
+                    </span>
+                    <span className="sh-play-tap-text">
+                      {inTelegram ? "Нажмите, чтобы смотреть" : "Воспроизвести"}
+                    </span>
+                  </button>
+                ) : null}
               </div>
             </div>
 
+            {showStartupTrace && startupBreakdown !== "—" ? (
+              <p className="sh-startup-trace" aria-live="polite">
+                {startupBreakdown}
+              </p>
+            ) : null}
+
+            {resumeHintSec != null && resumeHintSec > 0 ? (
+              <div className="sh-resume-hint" role="status" aria-live="polite">
+                <span>
+                  {resumeHintEpisode != null
+                    ? formatResumeHint(resumeHintEpisode, resumeHintSec)
+                    : `Продолжаем с ${formatClockSec(resumeHintSec)}`}
+                </span>
+                <button
+                  type="button"
+                  className="sh-btn"
+                  onClick={() => {
+                    const v = videoRef.current;
+                    const id = Number(animeId) || 0;
+                    const tid = String(translationId || "");
+                    const ep = Math.floor(Number(episode) || 1);
+                    if (v) {
+                      try {
+                        v.currentTime = 0;
+                        flushWatchProgress(id, tid, ep, 0);
+                      } catch {
+                        /* */
+                      }
+                    }
+                    setResumeHintSec(null);
+                    setResumeHintEpisode(null);
+                  }}
+                >
+                  С начала
+                </button>
+                <button
+                  type="button"
+                  className="sh-btn primary"
+                  onClick={() => {
+                    setResumeHintSec(null);
+                    setResumeHintEpisode(null);
+                  }}
+                >
+                  OK
+                </button>
+              </div>
+            ) : null}
+
+            <div className="sh-player-bar" aria-label="Управление плеером">
+              <div className="sh-player-bar-group">
+                <span className="sh-player-bar-label">Пропуск</span>
+                <div className="sh-skip-group">
+                  <button
+                    type="button"
+                    className="sh-mini-btn"
+                    disabled={!skipUi.canOpening}
+                    title={
+                      skipUi.showNoMarkersHint
+                        ? "Таймкоды OP/ED не переданы API"
+                        : !skipMarkers?.openingEndSec
+                          ? "Нет таймкода конца опенинга"
+                          : "Пропустить опенинг"
+                    }
+                    aria-label="Пропустить опенинг"
+                    onClick={() => skipOpening()}
+                  >
+                    OP
+                  </button>
+                  <button
+                    type="button"
+                    className="sh-mini-btn"
+                    disabled={!skipUi.canEnding}
+                    title={
+                      skipUi.showNoMarkersHint
+                        ? "Таймкоды OP/ED не переданы API"
+                        : skipUi.endingNeedsMeta
+                          ? "Дождитесь метаданных длительности"
+                          : "Пропустить эндинг"
+                    }
+                    aria-label="Пропустить эндинг"
+                    onClick={() => skipEnding()}
+                  >
+                    ED
+                  </button>
+                </div>
+              </div>
+              <div className="sh-player-bar-group">
+                <span className="sh-player-bar-label">Серия</span>
+                <div className="sh-skip-group">
+                  <button
+                    type="button"
+                    className="sh-mini-btn"
+                    onClick={goPrevEpisode}
+                    disabled={!canPrevEpisode || loadingBootstrap}
+                    aria-label="Предыдущая серия"
+                    title="Предыдущая серия"
+                  >
+                    ◀ Prev
+                  </button>
+                  <button type="button" className="sh-mini-btn sh-episode-now" disabled>
+                    #{Math.max(1, Math.floor(Number(episode) || 1))}
+                  </button>
+                  <button
+                    type="button"
+                    className="sh-mini-btn"
+                    onClick={goNextEpisode}
+                    disabled={!canNextEpisode || loadingBootstrap}
+                    aria-label="Следующая серия"
+                    title="Следующая серия"
+                  >
+                    Next ▶
+                  </button>
+                </div>
+              </div>
+              <div className="sh-player-bar-group">
+                <span className="sh-player-bar-label">Качество</span>
+                <select
+                  className="sh-quality-select"
+                  aria-label="Качество видео"
+                  value={activeQuality === "" ? "" : String(activeQuality)}
+                  disabled={qualitySelectDisabled}
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    if (Number.isFinite(next) && next > 0) void switchQuality(next);
+                  }}
+                >
+                  {qualityOptions.length === 0 ? (
+                    <option value="">—</option>
+                  ) : (
+                    [...qualityOptions]
+                      .sort((a, b) => b - a)
+                      .map((q) => (
+                        <option key={q} value={q}>
+                          {q}p
+                        </option>
+                      ))
+                  )}
+                </select>
+              </div>
+              {qualitySelectDisabled && hlsNativeQualityLock ? (
+                <p className="sh-player-bar-hint">В Safari качество выбирает система</p>
+              ) : null}
+            </div>
           </div>
 
           {geoBlocked ? (
@@ -1543,46 +2646,85 @@ export function KodikPlayer() {
               <strong>ОЗВУЧКА</strong>
               <div className="sh-tr-meta">
                 <span id="trCount">{translationsFiltered.length}</span>
+                {translationsCount > 0 && translationsFiltered.length !== translationsCount ? (
+                  <span className="sh-tr-meta-total"> / {translationsCount}</span>
+                ) : null}
               </div>
             </div>
-            <div className="sh-trbar-controls">
-              <input
-                id="trSearch"
-                className="sh-input sh-trbar-search"
-                placeholder="Поиск студии…"
-                value={trSearch}
-                onChange={(e) => setTrSearch(e.target.value)}
-                aria-label="Фильтр озвучек"
-              />
-            </div>
-            <div className="sh-tr-strip" role="list" aria-label="Список озвучек">
-              {translationsFiltered.map((t) => {
-                const id = translationRowIdString(t);
-                const active = String(translationId) === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    role="listitem"
-                    className={`sh-tr-chip${active ? " active" : ""}`}
-                    onClick={() => selectTranslation(id)}
-                    disabled={busy || loadingBootstrap}
-                    title={formatTranslationLabel(t)}
-                  >
-                    <span className="sh-tr-chip-title">{formatTranslationLabel(t)}</span>
-                    <span className="sh-tr-chip-go" aria-hidden>
-                      ▶
-                    </span>
-                  </button>
-                );
-              })}
+            {translationsCount > 0 ? (
+              <div className="sh-trbar-controls">
+                <input
+                  id="trSearch"
+                  className="sh-input sh-trbar-search"
+                  placeholder="Поиск студии…"
+                  value={trSearch}
+                  onChange={(e) => setTrSearch(e.target.value)}
+                  aria-label="Фильтр озвучек"
+                />
+              </div>
+            ) : null}
+            <div className="sh-tr-strip" aria-label="Список озвучек">
+              {geoBlocked ? (
+                <div className="sh-tr-placeholder">Озвучки недоступны в вашем регионе.</div>
+              ) : showTranslationsLoading ? (
+                <div className="sh-tr-placeholder">Загружаю озвучки…</div>
+              ) : showTranslationsEmpty ? (
+                <div className="sh-tr-placeholder">Озвучки не найдены для этого тайтла.</div>
+              ) : translationsForStrip.length === 0 && translationsCount > 0 ? (
+                <div className="sh-tr-placeholder">Нет совпадений по фильтру.</div>
+              ) : (
+                translationsForStrip.map((t) => {
+                  const id = translationRowIdString(t);
+                  const active = String(translationId) === id;
+                  const label = formatTranslationLabel(t);
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`sh-tr-chip${active ? " active" : ""}`}
+                      onClick={() => selectTranslation(id)}
+                      disabled={loadingBootstrap}
+                      title={label}
+                      aria-label={`Озвучка: ${label}`}
+                      aria-current={active ? "true" : undefined}
+                    >
+                      <span className="sh-tr-chip-title">{label}</span>
+                      <span className="sh-tr-chip-go" aria-hidden>
+                        ▶
+                      </span>
+                    </button>
+                  );
+                })
+              )}
             </div>
           </div>
 
           <div className="sh-episodes-head">
             <strong>СЕРИИ</strong>
-            <div className="sh-episodes-meta" id="episodesMeta">
-              {episodesMeta}
+            <div className="sh-episodes-head-actions">
+              <div className="sh-episodes-meta" id="episodesMeta">
+                {episodesMeta}
+              </div>
+              <div className="sh-episodes-nav">
+                <button
+                  type="button"
+                  className="sh-mini-btn"
+                  onClick={goPrevEpisode}
+                  disabled={!canPrevEpisode || loadingBootstrap}
+                  aria-label="Предыдущая серия"
+                >
+                  ◀
+                </button>
+                <button
+                  type="button"
+                  className="sh-mini-btn"
+                  onClick={goNextEpisode}
+                  disabled={!canNextEpisode || loadingBootstrap}
+                  aria-label="Следующая серия"
+                >
+                  ▶
+                </button>
+              </div>
             </div>
           </div>
           <form
@@ -1617,82 +2759,49 @@ export function KodikPlayer() {
               </span>
             ) : null}
           </form>
-          <div className="sh-episodes-strip" id="episodesStrip" role="list">
-            {episodeOptions.map((o) => (
-              <button
-                id={`ep-strip-btn-${o.value}`}
-                key={o.value}
-                type="button"
-                role="listitem"
-                className={`sh-ep-btn${String(episode) === o.value ? " active" : ""}`}
-                disabled={o.disabled}
-                onClick={() => {
-                  if (o.disabled) return;
-                  onPickEpisode(Number(o.value) || 1);
-                }}
-              >
-                {o.value}
-              </button>
-            ))}
+          <div className="sh-episodes-strip" id="episodesStrip">
+            {showEpisodesLoading ? (
+              <div className="sh-tr-placeholder">Загружаю серии…</div>
+            ) : episodeOptions.length === 0 ? (
+              <div className="sh-tr-placeholder">Серии недоступны для этой озвучки.</div>
+            ) : (
+              episodeOptions.map((o) => (
+                <button
+                  id={`ep-strip-btn-${o.value}`}
+                  key={o.value}
+                  type="button"
+                  className={`sh-ep-btn${String(episode) === o.value ? " active" : ""}`}
+                  disabled={o.disabled}
+                  aria-label={`Серия ${o.value}`}
+                  aria-current={String(episode) === o.value ? "true" : undefined}
+                  onClick={() => {
+                    if (o.disabled) return;
+                    onPickEpisode(Number(o.value) || 1);
+                  }}
+                >
+                  {o.value}
+                </button>
+              ))
+            )}
           </div>
         </div>
 
-        <div className="sh-card sh-chronology" aria-label="Хронология">
-          <div className="sh-chronology-head">
-            <strong>ХРОНОЛОГИЯ</strong>
-            <div className="sh-chronology-meta">
-              {chronologyLoading ? "загрузка…" : chronology.length ? `${chronology.length}` : "—"}
+        {chronologyErr ? (
+          <div className="sh-card sh-search-feedback">
+            <div className="sh-status error" role="alert">
+              Хронология: {chronologyErr}
             </div>
           </div>
-          {chronologyErr ? <div className="sh-status error">{chronologyErr}</div> : null}
-          {!chronologyErr && !chronologyLoading && chronology.length === 0 ? (
+        ) : null}
+        {chronologyLoading && !chronology.length ? (
+          <div className="sh-card sh-search-feedback">
             <div className="sh-status" role="status">
-              Нет данных для хронологии.
+              Загружаю хронологию…
             </div>
-          ) : null}
-          {chronology.length ? (
-            <div className="sh-chronology-strip" role="list" aria-label="Список по порядку">
-              {chronology.map((c) => {
-                const title = c.title || `#${c.anime_id}`;
-                const poster = c.poster;
-                const active = animeId != null && Number(animeId) === Number(c.anime_id);
-                const meta = [c.kind ? String(c.kind).toUpperCase() : null, c.year ? String(c.year) : null]
-                  .filter(Boolean)
-                  .join(" • ");
-                return (
-                  <button
-                    key={`ch-${c.anime_id}`}
-                    type="button"
-                    role="listitem"
-                    className={`sh-chronology-card${active ? " active" : ""}`}
-                    onClick={() =>
-                      void openAnimeFromSearchResult({
-                        anime_id: c.anime_id,
-                        title,
-                        poster: poster ?? null,
-                        original_title: c.original_title ?? null,
-                      })
-                    }
-                    disabled={busy || loadingBootstrap}
-                    title={title}
-                  >
-                    <span className="sh-chronology-poster" aria-hidden>
-                      {poster ? (
-                        <img src={poster} alt="" width={52} height={74} className="sh-chronology-img" />
-                      ) : (
-                        <span className="sh-chronology-poster-ph" />
-                      )}
-                    </span>
-                    <span className="sh-chronology-main">
-                      <span className="sh-chronology-title">{title}</span>
-                      {meta ? <span className="sh-chronology-sub">{meta}</span> : null}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
+        {renderChronologyStrip(chronologyTv, "TV", "tv")}
+        {renderChronologyStrip(chronologyOther, "Прочее", "other")}
 
         {showDebug ? (
           <div className="sh-card sh-debug">
@@ -1707,6 +2816,9 @@ export function KodikPlayer() {
             </div>
             <div className="sh-pill">
               <strong>Позиция:</strong> <span id="debugPlayback">{playbackDebugText}</span>
+            </div>
+            <div className="sh-pill">
+              <strong>Старт:</strong> <span id="debugStartup">{startupBreakdown}</span>
             </div>
             <pre id="debugJson" aria-label="debug json">
               {typeof debugJson === "string" ? debugJson : JSON.stringify(debugJson, null, 2)}

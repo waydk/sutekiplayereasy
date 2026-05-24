@@ -4,7 +4,7 @@
  */
 export const config = { runtime: "edge" };
 
-const BACKEND = (process.env.BACKEND_ORIGIN ?? "http://103.74.92.49:8765").replace(/\/+$/, "");
+const BACKEND = (process.env.BACKEND_ORIGIN ?? "http://103.74.92.49:8000").replace(/\/+$/, "");
 
 const ALLOW_ORIGINS = new Set([
   "https://waydk.github.io",
@@ -13,7 +13,17 @@ const ALLOW_ORIGINS = new Set([
 ]);
 
 function corsHeaders(origin: string | null): Record<string, string> {
-  const o = origin && (ALLOW_ORIGINS.has(origin) || origin.endsWith(".github.io")) ? origin : "https://waydk.github.io";
+  const o =
+    origin &&
+    (ALLOW_ORIGINS.has(origin) ||
+      origin.endsWith(".github.io") ||
+      origin.endsWith(".vercel.app") ||
+      origin.includes("localhost") ||
+      origin.includes("127.0.0.1") ||
+      origin.includes("telegram.org") ||
+      origin.endsWith(".t.me"))
+      ? origin
+      : "https://waydk.github.io";
   return {
     "Access-Control-Allow-Origin": o,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS, HEAD",

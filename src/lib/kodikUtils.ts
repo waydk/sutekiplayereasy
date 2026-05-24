@@ -23,6 +23,19 @@ export function translationRowIdString(t: TranslationRow | null | undefined): st
   return String(raw);
 }
 
+/** Kodik помечает фильмы series_range [0, 0] — не путать с TV диапазоном. */
+export function isMovieSeriesRange(r: unknown): boolean {
+  if (!Array.isArray(r) || r.length !== 2) return false;
+  return Number(r[0]) === 0 && Number(r[1]) === 0;
+}
+
+export function translationHasValidSeriesRange(t: TranslationRow | null | undefined): boolean {
+  if (!t) return false;
+  const sr = t.series_range;
+  if (!Array.isArray(sr) || sr.length !== 2) return false;
+  return !isMovieSeriesRange(sr);
+}
+
 export type EpisodeOpt = { value: string; label: string; disabled: boolean };
 
 export function formatTranslationLabel(t: TranslationRow): string {
@@ -47,6 +60,46 @@ export function pickFirstTranslationId(watch: { translations?: TranslationRow[] 
   return first ? translationRowIdString(first) : null;
 }
 
+/** Озвучка, в чей series_range входит серия; иначе первая без диапазона или первая в списке. */
+export function pickTranslationForEpisode(
+  watch: { translations?: TranslationRow[] } | null | undefined,
+  episode: number,
+): string | null {
+  const ep = Math.max(1, Math.floor(Number(episode) || 1));
+  const trs = (watch?.translations || []).filter((t) => translationRowHasId(t));
+  if (!trs.length) return null;
+
+  for (const t of trs) {
+    const r = t.series_range;
+    if (isMovieSeriesRange(r)) return translationRowIdString(t);
+    if (!Array.isArray(r) || r.length !== 2) continue;
+    const a = Number(r[0]);
+    const b = Number(r[1]);
+    if (a > 0 && b >= a && ep >= a && ep <= b) return translationRowIdString(t);
+  }
+
+  const withoutRange = trs.find((t) => {
+    const r = t.series_range;
+    return !Array.isArray(r) || r.length !== 2;
+  });
+  if (withoutRange) return translationRowIdString(withoutRange);
+
+  let best: TranslationRow | null = null;
+  let bestStart = Number.POSITIVE_INFINITY;
+  for (const t of trs) {
+    const r = t.series_range;
+    if (!Array.isArray(r) || r.length !== 2) continue;
+    const a = Number(r[0]);
+    if (a > 0 && a <= ep && a < bestStart) {
+      bestStart = a;
+      best = t;
+    }
+  }
+  if (best) return translationRowIdString(best);
+
+  return pickFirstTranslationId(watch ?? null);
+}
+
 /** Есть ли у выбранной озвучки series_range — тогда список серий можно собрать без GET /episodes. */
 export function translationHasSeriesRangeForTranslationId(
   watch: { translations?: TranslationRow[] } | null | undefined,
@@ -57,7 +110,7 @@ export function translationHasSeriesRangeForTranslationId(
   for (const t of watch.translations) {
     if (translationRowIdString(t) !== tid) continue;
     const sr = t.series_range;
-    return Array.isArray(sr) && sr.length === 2;
+    return translationHasValidSeriesRange(t);
   }
   return false;
 }
@@ -90,9 +143,6 @@ export function buildKodikEpisodesPayloadFromWatch(
   seasonSize = 12,
 ): KodikEpisodesApiPayload {
   const translations = Array.isArray(watch.translations) ? watch.translations : [];
-  let total = Math.max(0, Math.floor(Number(watch.series_count) || 0));
-  if (!total) total = 12;
-
   let trRange: [number, number] | null = null;
   const tid = String(translationId || "").trim();
   if (tid) {
@@ -100,10 +150,17 @@ export function buildKodikEpisodesPayloadFromWatch(
       if (translationRowIdString(t) !== tid) continue;
       const sr = t.series_range;
       if (Array.isArray(sr) && sr.length === 2) {
-        trRange = [Number(sr[0]) || 1, Number(sr[1]) || 0];
+        if (isMovieSeriesRange(sr)) trRange = [1, 1];
+        else trRange = [Number(sr[0]) || 1, Number(sr[1]) || 0];
       }
       break;
     }
+  }
+
+  let total = Math.max(0, Math.floor(Number(watch.series_count) || 0));
+  if (!total) {
+    const movieMarker = translations.some((t) => isMovieSeriesRange(t.series_range));
+    total = movieMarker || (trRange && trRange[0] === 1 && trRange[1] === 1) ? 1 : 12;
   }
 
   const size = Math.max(1, seasonSize);
@@ -184,9 +241,6 @@ export function buildEpisodesOptions(episodesPayload: {
       out.push({ value: String(n), label: `Серия ${n}${avail ? "" : " (недоступно)"}`, disabled: !avail });
     }
   }
-  if (!out.length) {
-    for (let i = 1; i <= 12; i++) out.push({ value: String(i), label: `Серия ${i}`, disabled: false });
-  }
   const seen = new Set<string>();
   return out.filter((x) => (seen.has(x.value) ? false : (seen.add(x.value), true)));
 }
@@ -248,9 +302,9 @@ function directHlsEnabled(): boolean {
   return import.meta.env.VITE_DIRECT_HLS === "1";
 }
 
-export function proxifyMediaUrl(u: string): string {
+export function proxifyMediaUrl(u: string, opts?: { direct?: boolean }): string {
   const raw = String(u || "").trim();
-  if (directMp4Enabled() && (raw.startsWith("https://") || raw.startsWith("http://"))) {
+  if ((opts?.direct || directMp4Enabled()) && (raw.startsWith("https://") || raw.startsWith("http://"))) {
     return raw;
   }
   const path = `/api/v1/media/kodik?url=${encodeURIComponent(raw)}`;

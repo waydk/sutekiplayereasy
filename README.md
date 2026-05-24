@@ -15,6 +15,8 @@ npm run dev
 
 ```
 VITE_API_BASE=http://127.0.0.1:8000/api/v1
+# Прямая ссылка на GIF для экранов ожидания плеера (иначе — дефолт из `src/lib/waitPhrases.ts`).
+# VITE_PLAYER_WAIT_GIF_URL=https://example.com/your-wait.gif
 ```
 
 ## Production
@@ -25,6 +27,8 @@ VITE_API_BASE=http://127.0.0.1:8000/api/v1
 
 Один раз задеплой прокси: [`api-proxy/README.md`](api-proxy/README.md).  
 URL прокси: `public/runtime-config.json` (можно менять без пересборки).
+
+**Vercel (корень `sutekiplayereasy`, Edge `middleware.ts`):** в настройках проекта задайте **`BACKEND_ORIGIN=https://suteki-api-proxy.vercel.app`** (или другой рабочий HTTPS до API). Так первый запрос идёт в стабильный прокси, а не напрямую на VPS с Edge.
 
 ## Как пользоваться
 

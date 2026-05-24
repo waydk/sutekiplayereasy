@@ -2,11 +2,177 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual"
+    />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Suteki Player Easy</title>
     <link rel="preconnect" href="https://kodik.biz" crossorigin />
     <link rel="preconnect" href="https://kodikplayer.com" crossorigin />
     <link rel="dns-prefetch" href="https://kodik.biz" />
+    <link rel="preconnect" href="https://103.74.92.49" crossorigin />
+    <link rel="dns-prefetch" href="https://103.74.92.49" />
+    <link rel="preconnect" href="https://cloud.solodcdn.com" crossorigin />
+    <link rel="dns-prefetch" href="https://cloud.solodcdn.com" />
+    <script>
+      /* Suteki: super-early boot prefetch.
+         Запускаем bootstrap+link до загрузки JS-модулей, чтобы React-плеер мог
+         использовать уже готовый Promise. Экономит ~150-400ms RTT на старте. */
+      (function () {
+        try {
+          var W = window;
+          W.__sutekiBoot__ = W.__sutekiBoot__ || {};
+          var loc = W.location || {};
+          /* Vite заменяет import.meta.env.VITE_API_BASE через define при build;
+             в HTML это работает не везде, поэтому fallback на same-origin (vercel proxy). */
+          var apiBase = (W.__SUTEKI_API_BASE__ || "");
+          var origin = null;
+          if (apiBase && apiBase.indexOf("%") !== 0) {
+            try { origin = new URL(apiBase).origin; } catch (e) {}
+          }
+          if (!origin && loc.hostname) {
+            origin = loc.origin;
+          }
+          if (origin) {
+            if (!document.querySelector('link[rel="preconnect"][data-suteki-api="1"]')) {
+              var l = document.createElement("link");
+              l.rel = "preconnect"; l.href = origin; l.crossOrigin = "anonymous";
+              l.setAttribute("data-suteki-api", "1");
+              document.head.appendChild(l);
+            }
+          }
+          if (!origin) return;
+
+          var params = new URLSearchParams(loc.search || "");
+          /* shiki_id / shikimori_id / anime_id / id — все варианты deep-link */
+          var idRaw = params.get("shiki_id") || params.get("shikimori_id") || params.get("anime_id") || params.get("id");
+          /* Telegram start_param: shiki_123 → 123 */
+          if (!idRaw) {
+            var sp = params.get("tgWebAppStartParam") || "";
+            var m = /^shiki[_-]?(\d+)$/i.exec(sp);
+            if (m) idRaw = m[1]; else if (/^\d+$/.test(sp)) idRaw = sp;
+          }
+          var id = idRaw ? Math.floor(Number(idRaw)) : 0;
+
+          /* Главная: постеры и календарь до загрузки React-бандла */
+          if (!id || id <= 0) {
+            var homeIds = [5114, 9253, 16498, 11061, 1535, 30276, 2904, 1, 918];
+            homeIds.forEach(function (sid) {
+              try {
+                var pu = origin + "/api/v1/assets/anime/" + sid + "/poster.jpg?v=poster";
+                var plp = document.createElement("link");
+                plp.rel = "preload";
+                plp.as = "image";
+                plp.href = pu;
+                document.head.appendChild(plp);
+              } catch (e) {}
+            });
+            W.__sutekiHomeCal__ = fetch(origin + "/api/v1/anime/calendar/today", {
+              headers: { Accept: "application/json" },
+              credentials: "same-origin",
+            }).then(function (r) {
+              return r.json();
+            });
+            W.__sutekiHomeCal__.catch(function () {});
+            W.__sutekiHomeCal__.then(function (cal) {
+              try {
+                if (!cal || !cal.items) return;
+                cal.items.forEach(function (it) {
+                  if (!it || !it.anime_id) return;
+                  var cu =
+                    origin + "/api/v1/assets/anime/" + it.anime_id + "/poster.jpg?v=poster";
+                  var cl = document.createElement("link");
+                  cl.rel = "preload";
+                  cl.as = "image";
+                  cl.href = cu;
+                  document.head.appendChild(cl);
+                });
+              } catch (e) {}
+            });
+            return;
+          }
+
+          /* Без episode в URL React подставит последнюю серию из localStorage — не грузим ep=1 зря. */
+          if (!params.has("episode")) return;
+
+          var tidRaw = (params.get("translation_id") || "").trim();
+          var epRaw = params.get("episode");
+          var ep = epRaw && Number(epRaw) > 0 ? Math.floor(Number(epRaw)) : 1;
+
+          var isTg = false;
+          try {
+            isTg = !!(W.Telegram && W.Telegram.WebApp && W.Telegram.WebApp.initData);
+          } catch (e) {}
+          if (!isTg && /Telegram/i.test(navigator.userAgent || "")) isTg = true;
+          if (!isTg && (params.get("tgWebAppStartParam") || (loc.search || "").indexOf("tgWebApp") >= 0)) isTg = true;
+
+          var qs = "episode=" + encodeURIComponent(ep) + "&include_link=true";
+          if (tidRaw) qs += "&translation_id=" + encodeURIComponent(tidRaw);
+          if (isTg) qs += "&client=tg";
+          var bootUrl = origin + "/api/v1/anime/" + encodeURIComponent(id) + "/player/bootstrap?" + qs;
+
+          /* Native <link rel="preload"> — браузер уважает HTTP cache и shares со fetch'ем ниже */
+          try {
+            var pl = document.createElement("link");
+            pl.rel = "preload"; pl.as = "fetch"; pl.href = bootUrl; pl.crossOrigin = "anonymous";
+            document.head.appendChild(pl);
+          } catch (e) {}
+
+          /* Actual fetch, сохраняем Promise — React подхватит */
+          W.__sutekiBoot__.params = { animeId: id, translationId: tidRaw || null, episode: ep };
+          var bootHeaders = { Accept: "application/json" };
+          if (isTg) bootHeaders["X-Suteki-Client"] = "tg";
+          W.__sutekiBoot__.bootstrap = fetch(bootUrl, {
+            headers: bootHeaders,
+            credentials: "same-origin",
+            cache: "no-store",
+          }).then(function (r) {
+            return r.json().then(function (j) {
+              if (!r.ok) throw new Error((j && j.detail) || ("HTTP " + r.status));
+              return j;
+            });
+          });
+          /* Не превращать в unhandled rejection, если плеер не успеет подписаться */
+          W.__sutekiBoot__.bootstrap.catch(function () {});
+          W.__sutekiBoot__.bootstrap.then(function (data) {
+            try {
+              var lk = data && data.link && data.link.player_url;
+              if (!lk || lk.indexOf("http") !== 0) return;
+              var o;
+              try { o = new URL(lk).origin; } catch (e) { return; }
+              if (!document.querySelector('link[rel="preconnect"][href="' + o + '"]')) {
+                var pc = document.createElement("link");
+                pc.rel = "preconnect"; pc.href = o; pc.crossOrigin = "anonymous";
+                document.head.appendChild(pc);
+              }
+              /* В TG не preload всего MP4 — конкурирует с HLS/manifest и тормозит Mini App. */
+              if (isTg) return;
+              var plId = "suteki-early-mp4-preload";
+              if (!document.getElementById(plId)) {
+                var plv = document.createElement("link");
+                plv.id = plId;
+                plv.rel = "preload"; plv.as = "video"; plv.href = lk;
+                plv.crossOrigin = "anonymous";
+                document.head.appendChild(plv);
+              }
+            } catch (e) {}
+          });
+
+          /* Дополнительно: preconnect к Kodik CDN, который обычно отдаёт mp4 */
+          ["https://cloud.solodcdn.com", "https://kodikplayer.com"].forEach(function (h) {
+            try {
+              var p = document.createElement("link");
+              p.rel = "preconnect"; p.href = h; p.crossOrigin = "anonymous";
+              document.head.appendChild(p);
+            } catch (e) {}
+          });
+        } catch (e) { /* */ }
+      })();
+    </script>
   </head>
   <body class="player-root">
     <div id="root"></div>

@@ -22,12 +22,19 @@ export type PlayerBootstrapResponse = {
 
 export function playerBootstrapUrl(
   animeId: number,
-  opts: { translationId?: string | null; episode?: number; includeLink?: boolean },
+  opts: {
+    translationId?: string | null;
+    episode?: number;
+    includeLink?: boolean;
+    client?: string | null;
+  },
 ): string {
   const params = new URLSearchParams();
   params.set("episode", String(opts.episode ?? 1));
   params.set("include_link", opts.includeLink !== false ? "true" : "false");
   const tid = (opts.translationId ?? "").trim();
   if (tid) params.set("translation_id", tid);
+  const client = (opts.client ?? "").trim();
+  if (client) params.set("client", client);
   return hubApiUrl(`/anime/${encodeURIComponent(animeId)}/player/bootstrap?${params}`);
 }

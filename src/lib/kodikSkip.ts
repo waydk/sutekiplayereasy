@@ -81,6 +81,18 @@ export function seekVideoToSec(video: HTMLVideoElement, t: number): void {
   }
 }
 
+/** Автопропуск OP один раз за эпизод (если Kodik отдал таймкод и нет resume позже OP). */
+export function shouldAutoSkipOpening(
+  markers: KodikSkipMarkers | null,
+  resumeSec: number | null,
+  currentTimeSec: number,
+): boolean {
+  const target = markers?.openingEndSec;
+  if (target == null || target <= 0.5) return false;
+  if (resumeSec != null && resumeSec > target + 0.5) return false;
+  return currentTimeSec < target - 0.35;
+}
+
 export function hasAnySkipMarker(m: KodikSkipMarkers | null): boolean {
   if (!m) return false;
   return (
