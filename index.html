@@ -102,13 +102,20 @@
                 if (!cal || !cal.items) return;
                 cal.items.forEach(function (it) {
                   if (!it || !it.anime_id) return;
-                  var cu =
-                    origin + "/api/v1/assets/anime/" + it.anime_id + "/poster.jpg?v=poster";
+                  var p = it.poster || "";
+                  if (!p) return;
+                  if (p.indexOf("shikimori.") < 0 && p.indexOf("/system/animes/") < 0) return;
+                  var cu = p.indexOf("http") === 0 ? p : origin + (p.charAt(0) === "/" ? p : "/" + p);
                   var cl = document.createElement("link");
                   cl.rel = "preload";
                   cl.as = "image";
                   cl.href = cu;
+                  try { cl.crossOrigin = "anonymous"; } catch (e) {}
                   document.head.appendChild(cl);
+                  var im = new Image();
+                  im.decoding = "async";
+                  try { im.crossOrigin = "anonymous"; } catch (e) {}
+                  im.src = cu;
                 });
               } catch (e) {}
             });

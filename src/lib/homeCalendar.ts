@@ -1,4 +1,5 @@
 import { getApiBase } from "../apiBase";
+import { rememberCalendarPosters, warmCalendarPosters } from "./calendarPosterCache";
 
 export type CalendarAiringItem = {
   anime_id: number;
@@ -58,9 +59,15 @@ function writeCalendarToStorage(payload: TodayCalendarPayload): void {
   }
 }
 
+function hydrateCalendarPayload(payload: TodayCalendarPayload): TodayCalendarPayload {
+  rememberCalendarPosters(payload.items);
+  warmCalendarPosters(payload.items);
+  return payload;
+}
+
 export async function fetchTodayCalendar(): Promise<TodayCalendarPayload> {
   const cached = readCalendarFromStorage();
-  if (cached) return cached;
+  if (cached) return hydrateCalendarPayload(cached);
 
   if (typeof window !== "undefined") {
     const w = window as Window & { __sutekiHomeCal__?: Promise<TodayCalendarPayload> };
@@ -68,7 +75,7 @@ export async function fetchTodayCalendar(): Promise<TodayCalendarPayload> {
       try {
         const payload = await w.__sutekiHomeCal__;
         writeCalendarToStorage(payload);
-        return payload;
+        return hydrateCalendarPayload(payload);
       } catch {
         delete w.__sutekiHomeCal__;
       }
@@ -88,7 +95,5 @@ export async function fetchTodayCalendar(): Promise<TodayCalendarPayload> {
   }
   const payload = (await r.json()) as TodayCalendarPayload;
   writeCalendarToStorage(payload);
-  return payload;
+  return hydrateCalendarPayload(payload);
 }
-
-export { posterAssetUrl as calendarPosterUrl } from "./posterPreload";

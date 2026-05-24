@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { HomeCalendar } from "./components/HomeCalendar";
 import { HomeSearch } from "./components/HomeSearch";
 import { PosterImage } from "./components/PosterImage";
-import { calendarPosterSrc } from "./lib/homePreload";
+import { posterAssetUrl } from "./lib/posterPreload";
 import { formatRank, RECOMMENDED_ANIME } from "./lib/topAnime";
 
 type HomePageProps = {
@@ -89,7 +89,7 @@ export function HomePage({ onSelectAnime }: HomePageProps) {
 
                   <span className="home-card__art" aria-hidden="true">
                     <PosterImage
-                      src={calendarPosterSrc(anime.shikiId)}
+                      src={posterAssetUrl(anime.shikiId)}
                       width={480}
                       height={280}
                       loading={index < 6 ? "eager" : "lazy"}

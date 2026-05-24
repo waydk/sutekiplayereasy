@@ -1,5 +1,6 @@
+import { warmCalendarPosters } from "./calendarPosterCache";
 import { fetchTodayCalendar, type TodayCalendarPayload } from "./homeCalendar";
-import { posterAssetUrl, warmPosterIds } from "./posterPreload";
+import { warmPosterIds } from "./posterPreload";
 import { RECOMMENDED_ANIME } from "./topAnime";
 
 let calendarPromise: Promise<TodayCalendarPayload> | null = null;
@@ -33,11 +34,6 @@ export function kickHomePreload(): void {
   warmPosterIds(RECOMMENDED_ANIME.map((a) => a.shikiId));
 
   void ensureHomeCalendar().then((cal) => {
-    const ids = cal.items.map((x) => x.anime_id).filter((id) => id > 0);
-    warmPosterIds(ids);
+    warmCalendarPosters(cal.items);
   });
-}
-
-export function calendarPosterSrc(animeId: number): string {
-  return posterAssetUrl(animeId);
 }

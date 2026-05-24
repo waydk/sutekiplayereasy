@@ -6,6 +6,15 @@ export function posterAssetUrl(animeId: number): string {
   return `/api/v1/assets/anime/${animeId}/poster.jpg?v=poster`;
 }
 
+function isCrossOriginPoster(url: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return new URL(url, window.location.origin).origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 export function preloadPosterLinkHints(urls: string[]): void {
   if (typeof document === "undefined") return;
   for (const href of urls) {
@@ -16,6 +25,9 @@ export function preloadPosterLinkHints(urls: string[]): void {
     link.rel = "preload";
     link.as = "image";
     link.href = href;
+    if (isCrossOriginPoster(href)) {
+      link.crossOrigin = "anonymous";
+    }
     document.head.appendChild(link);
   }
 }
@@ -26,6 +38,9 @@ export function preloadPosterImages(urls: string[]): void {
     if (!src) continue;
     const img = new Image();
     img.decoding = "async";
+    if (isCrossOriginPoster(src)) {
+      img.crossOrigin = "anonymous";
+    }
     try {
       (img as HTMLImageElement & { fetchPriority?: string }).fetchPriority = "high";
     } catch {
@@ -42,7 +57,12 @@ export function warmPosterCache(urls: string[]): void {
   if (typeof fetch === "undefined") return;
   for (const url of urls) {
     if (!url) continue;
-    void fetch(url, { credentials: "same-origin", priority: "high" }).catch(() => {});
+    const cross = isCrossOriginPoster(url);
+    void fetch(url, {
+      mode: cross ? "cors" : "same-origin",
+      credentials: cross ? "omit" : "same-origin",
+      priority: "high",
+    }).catch(() => {});
   }
 }
 

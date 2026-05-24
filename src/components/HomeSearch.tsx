@@ -5,7 +5,7 @@ import {
   SEARCH_DEBOUNCE_MS,
   type AnimeSearchRow,
 } from "../lib/animeSearch";
-import { calendarPosterSrc } from "../lib/homePreload";
+import { posterAssetUrl } from "../lib/posterPreload";
 import { PosterImage } from "./PosterImage";
 
 type HomeSearchProps = {
@@ -163,7 +163,7 @@ export function HomeSearch({ onOpenAnime }: HomeSearchProps) {
                   >
                     <span className="home-search__poster" aria-hidden="true">
                       <PosterImage
-                        src={row.poster || calendarPosterSrc(row.anime_id)}
+                        src={row.poster || posterAssetUrl(row.anime_id)}
                         width={44}
                         height={62}
                         loading="lazy"
