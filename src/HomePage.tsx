@@ -9,6 +9,14 @@ type HomePageProps = {
   onSelectAnime: (shikiId: number) => void;
 };
 
+function PlayIcon() {
+  return (
+    <svg className="home-card__play-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 5v14l11-7z" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function HomePage({ onSelectAnime }: HomePageProps) {
   const handleKey = useCallback(
     (e: React.KeyboardEvent, shikiId: number) => {
@@ -46,46 +54,49 @@ export function HomePage({ onSelectAnime }: HomePageProps) {
             </div>
           </div>
 
-          <ol className="home-picks" aria-label="Рекомендации">
+          <ol className="home-grid" aria-label="Рекомендации">
             {RECOMMENDED_ANIME.map((anime, index) => (
-              <li
-                key={anime.shikiId}
-                className="home-picks__item"
-                style={{ ["--home-i" as string]: index }}
-              >
+              <li key={anime.shikiId} className="home-grid__item">
                 <button
                   type="button"
-                  className="home-pick"
+                  className={`home-card home-card--${anime.variant}`}
                   onClick={() => onSelectAnime(anime.shikiId)}
                   onKeyDown={(e) => handleKey(e, anime.shikiId)}
                 >
-                  <span className="home-pick__poster" aria-hidden="true">
-                    <PosterImage
-                      src={calendarPosterSrc(anime.shikiId)}
-                      width={240}
-                      height={360}
-                      loading={index < 9 ? "eager" : "lazy"}
-                      fetchPriority={index < 6 ? "high" : undefined}
-                      instant={index < 6}
-                    />
-                    <span className="home-pick__rank">{formatRank(anime.rank)}</span>
-                    <span className="home-pick__overlay" aria-hidden="true">
-                      <span className="home-pick__play" aria-hidden="true">
-                        ▶
+                  <span className="home-card__year" aria-hidden="true">
+                    \ {anime.year}
+                  </span>
+
+                  <span className="home-card__rank" aria-hidden="true">
+                    {formatRank(anime.rank)}
+                  </span>
+
+                  <span className="home-card__title-ja" aria-hidden="true">
+                    {anime.titleJa}
+                  </span>
+
+                  <span className="home-card__info">
+                    <span className="home-card__title">{anime.title}</span>
+                    <span className="home-card__genres">{anime.genres}</span>
+                    <span className="home-card__cta">
+                      <span className="home-card__watch">
+                        <PlayIcon />
+                        Смотреть
                       </span>
+                      <span className="home-card__eps">{anime.episodesLabel}</span>
                     </span>
                   </span>
 
-                  <span className="home-pick__body">
-                    <span className="home-pick__title">{anime.title}</span>
-                    <span className="home-pick__meta">
-                      <span className="home-pick__year">{anime.year}</span>
-                      <span className="home-pick__dot" aria-hidden="true">
-                        ·
-                      </span>
-                      <span className="home-pick__eps">{anime.episodesLabel}</span>
-                    </span>
-                    <span className="home-pick__genres">{anime.genres}</span>
+                  <span className="home-card__art" aria-hidden="true">
+                    <PosterImage
+                      src={calendarPosterSrc(anime.shikiId)}
+                      width={480}
+                      height={280}
+                      loading={index < 6 ? "eager" : "lazy"}
+                      fetchPriority={index < 3 ? "high" : undefined}
+                      instant={index < 4}
+                      className="home-card__poster"
+                    />
                   </span>
                 </button>
               </li>
