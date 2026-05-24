@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import "./styles.css";
 import { App } from "./App";
 import { getApiBase, initApiBase } from "./apiBase";
+import { isHomeRoute } from "./lib/homePreload";
 import { kickHomePreload } from "./lib/homePreload";
 import { warmBootstrap } from "./lib/playerCache";
 import { resolveLaunchWatch } from "./lib/watchProgress";
@@ -10,6 +11,8 @@ import { initTelegramWebApp, parseLaunchShikiId } from "./telegramWebApp";
 
 function registerPosterServiceWorker(): void {
   if (!("serviceWorker" in navigator)) return;
+  /* SW только на главной — кэширует assets-постеры, не ломает Shikimori <img> в плеере. */
+  if (!isHomeRoute()) return;
   void navigator.serviceWorker.register("/poster-sw.js", { scope: "/" }).catch(() => {});
 }
 

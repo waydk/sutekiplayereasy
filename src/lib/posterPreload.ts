@@ -57,12 +57,9 @@ export function warmPosterCache(urls: string[]): void {
   if (typeof fetch === "undefined") return;
   for (const url of urls) {
     if (!url) continue;
-    const cross = isCrossOriginPoster(url);
-    void fetch(url, {
-      mode: cross ? "cors" : "same-origin",
-      credentials: cross ? "omit" : "same-origin",
-      priority: "high",
-    }).catch(() => {});
+    if (!isCrossOriginPoster(url)) {
+      void fetch(url, { credentials: "same-origin", priority: "high" }).catch(() => {});
+    }
   }
 }
 
