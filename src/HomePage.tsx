@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 import { HomeCalendar } from "./components/HomeCalendar";
 import { HomeSearch } from "./components/HomeSearch";
 import { PosterImage } from "./components/PosterImage";
@@ -10,11 +10,6 @@ type HomePageProps = {
 };
 
 export function HomePage({ onSelectAnime }: HomePageProps) {
-  useEffect(() => {
-    document.body.classList.add("home-root");
-    return () => document.body.classList.remove("home-root");
-  }, []);
-
   const handleKey = useCallback(
     (e: React.KeyboardEvent, shikiId: number) => {
       if (e.key === "Enter" || e.key === " ") {
@@ -69,8 +64,9 @@ export function HomePage({ onSelectAnime }: HomePageProps) {
                       src={calendarPosterSrc(anime.shikiId)}
                       width={240}
                       height={360}
-                      loading={index < 6 ? "eager" : "lazy"}
-                      fetchPriority={index < 3 ? "high" : index < 6 ? "auto" : undefined}
+                      loading={index < 9 ? "eager" : "lazy"}
+                      fetchPriority={index < 6 ? "high" : undefined}
+                      instant={index < 6}
                     />
                     <span className="home-pick__rank">{formatRank(anime.rank)}</span>
                     <span className="home-pick__overlay" aria-hidden="true">

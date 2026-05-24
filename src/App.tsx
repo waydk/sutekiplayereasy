@@ -9,7 +9,7 @@ const KodikPlayer = lazy(() =>
   import("./KodikPlayer").then((m) => ({ default: m.KodikPlayer })),
 );
 
-function canMountPlayerImmediately(): boolean {
+function canMountImmediately(): boolean {
   if (typeof window === "undefined") return false;
   const { protocol, hostname } = window.location;
   if (hostname === "localhost" || hostname === "127.0.0.1") return true;
@@ -18,7 +18,7 @@ function canMountPlayerImmediately(): boolean {
 }
 
 export function App() {
-  const [ready, setReady] = useState(canMountPlayerImmediately);
+  const [ready, setReady] = useState(canMountImmediately);
   const launchId = useLaunchShikiId();
 
   useEffect(() => {

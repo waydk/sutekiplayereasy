@@ -3723,10 +3723,6 @@ html.tg-webapp .sh-anime-load-bg {
 
 /* ——— Главная (в стиле плеера) ——— */
 
-body.player-root.home-root {
-  /* Фон как у плеера — без светлой темы */
-}
-
 .home-page {
   width: 100%;
 }
@@ -3736,25 +3732,25 @@ body.player-root.home-root {
 }
 
 .home-enter {
-  animation: home-rise-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: home-rise-in 0.28s ease-out both;
 }
 
 .home-enter--2 {
-  animation-delay: 0.07s;
+  animation-delay: 0.04s;
 }
 
 .home-enter--3 {
-  animation-delay: 0.14s;
+  animation-delay: 0.07s;
 }
 
 .home-enter--4 {
-  animation-delay: 0.2s;
+  animation-delay: 0.1s;
 }
 
 @keyframes home-rise-in {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -3904,11 +3900,16 @@ body.player-root.home-root {
   object-fit: cover;
   display: block;
   opacity: 0;
-  transition: opacity 0.35s ease;
+  transition: opacity 0.12s ease-out;
 }
 
 .poster-img--loaded img {
   opacity: 1;
+}
+
+.poster-img--instant.poster-img--loaded img,
+.poster-img--instant img {
+  transition: none;
 }
 
 .poster-img__sk {
@@ -3974,8 +3975,13 @@ body.player-root.home-root {
   margin: 0;
   padding: 0;
   min-width: 0;
-  animation: home-rise-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: calc(0.12s + (var(--home-i, 0) * 45ms));
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
+.home-picks__item:nth-child(n + 4) {
+  animation: home-rise-in 0.25s ease-out both;
+  animation-delay: calc(var(--home-i, 0) * 18ms);
 }
 
 .home-pick {
@@ -4228,8 +4234,8 @@ body.player-root.home-root {
 }
 
 .home-cal__item--ready {
-  animation: home-rise-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: calc(var(--home-i, 0) * 35ms);
+  animation: home-rise-in 0.22s ease-out both;
+  animation-delay: calc(min(var(--home-i, 0), 8) * 12ms);
 }
 
 .home-cal__row {

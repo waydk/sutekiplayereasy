@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 type PosterImageProps = {
   src: string;
@@ -8,6 +8,8 @@ type PosterImageProps = {
   loading?: "eager" | "lazy";
   fetchPriority?: "high" | "low" | "auto";
   className?: string;
+  /** Без fade — быстрее для постеров above the fold */
+  instant?: boolean;
 };
 
 export function PosterImage({
@@ -18,15 +20,26 @@ export function PosterImage({
   loading = "lazy",
   fetchPriority,
   className,
+  instant = false,
 }: PosterImageProps) {
+  const imgRef = useRef<HTMLImageElement>(null);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const onLoad = useCallback(() => setLoaded(true), []);
+  const markLoaded = useCallback(() => setLoaded(true), []);
   const onError = useCallback(() => {
     setFailed(true);
     setLoaded(true);
   }, []);
+
+  useLayoutEffect(() => {
+    setLoaded(false);
+    setFailed(false);
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth > 0) {
+      setLoaded(true);
+    }
+  }, [src]);
 
   return (
     <span
@@ -34,6 +47,7 @@ export function PosterImage({
         "poster-img",
         loaded ? "poster-img--loaded" : "poster-img--loading",
         failed ? "poster-img--error" : "",
+        instant ? "poster-img--instant" : "",
         className ?? "",
       ]
         .filter(Boolean)
@@ -43,6 +57,7 @@ export function PosterImage({
       {!loaded ? <span className="poster-img__sk" aria-hidden="true" /> : null}
       {!failed ? (
         <img
+          ref={imgRef}
           src={src}
           alt={alt}
           width={width}
@@ -50,7 +65,7 @@ export function PosterImage({
           loading={loading}
           decoding="async"
           fetchPriority={fetchPriority}
-          onLoad={onLoad}
+          onLoad={markLoaded}
           onError={onError}
         />
       ) : null}

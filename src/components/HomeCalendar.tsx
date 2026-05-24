@@ -112,8 +112,9 @@ export function HomeCalendar({ onSelectAnime }: HomeCalendarProps) {
                     src={calendarPosterSrc(item.anime_id)}
                     width={56}
                     height={76}
-                    loading={index < 8 ? "eager" : "lazy"}
-                    fetchPriority={index < 4 ? "high" : undefined}
+                    loading="eager"
+                    fetchPriority={index < 6 ? "high" : undefined}
+                    instant={index < 6}
                   />
                 </span>
                 <span className="home-cal__body">

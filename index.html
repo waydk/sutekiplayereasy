@@ -7,6 +7,20 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual"
     />
     <meta name="theme-color" content="#0b0d12" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #0b0d12;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      body.player-root {
+        min-height: 100%;
+      }
+      #root {
+        min-height: 100dvh;
+      }
+    </style>
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -68,7 +82,12 @@
                 plp.rel = "preload";
                 plp.as = "image";
                 plp.href = pu;
+                plp.fetchPriority = "high";
                 document.head.appendChild(plp);
+                var im = new Image();
+                im.decoding = "async";
+                try { im.fetchPriority = "high"; } catch (e) {}
+                im.src = pu;
               } catch (e) {}
             });
             W.__sutekiHomeCal__ = fetch(origin + "/api/v1/anime/calendar/today", {
