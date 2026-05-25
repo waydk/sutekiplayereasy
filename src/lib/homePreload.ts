@@ -1,4 +1,3 @@
-import { warmCalendarPosters } from "./calendarPosterCache";
 import { fetchTodayCalendar, type TodayCalendarPayload } from "./homeCalendar";
 import { warmPosterIds } from "./posterPreload";
 import { RECOMMENDED_ANIME } from "./topAnime";
@@ -32,8 +31,5 @@ export function kickHomePreload(): void {
   if (!isHomeRoute()) return;
 
   warmPosterIds(RECOMMENDED_ANIME.map((a) => a.shikiId));
-
-  void ensureHomeCalendar().then((cal) => {
-    warmCalendarPosters(cal.items);
-  });
+  void ensureHomeCalendar();
 }

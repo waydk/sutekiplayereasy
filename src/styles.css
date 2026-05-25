@@ -4250,7 +4250,7 @@ html.tg-webapp .sh-anime-load-bg {
 }
 
 .home-cal__sk-row {
-  height: 76px;
+  height: 52px;
   border-radius: 14px;
   background: linear-gradient(
     110deg,
@@ -4276,9 +4276,9 @@ html.tg-webapp .sh-anime-load-bg {
 .home-cal__list::before {
   content: "";
   position: absolute;
-  left: 39px;
-  top: 18px;
-  bottom: 18px;
+  left: 26px;
+  top: 14px;
+  bottom: 14px;
   width: 2px;
   border-radius: 2px;
   background: linear-gradient(180deg, rgba(124, 92, 255, 0.45) 0%, rgba(255, 255, 255, 0.06) 100%);
@@ -4298,12 +4298,12 @@ html.tg-webapp .sh-anime-load-bg {
 .home-cal__row {
   position: relative;
   display: grid;
-  grid-template-columns: 52px 56px minmax(0, 1fr) auto;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
   align-items: center;
-  gap: clamp(12px, 2vw, 18px);
+  gap: clamp(10px, 2vw, 14px);
   width: 100%;
   margin: 0;
-  padding: 12px 8px;
+  padding: 10px 8px;
   border: 0;
   border-radius: 14px;
   background: transparent;
@@ -4336,24 +4336,6 @@ html.tg-webapp .sh-anime-load-bg {
   text-align: right;
   padding-right: 6px;
   color: rgba(255, 255, 255, 0.88);
-}
-
-.home-cal__poster {
-  position: relative;
-  z-index: 1;
-  width: 56px;
-  height: 76px;
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(0, 0, 0, 0.35);
-}
-
-.home-cal__poster .poster-img,
-.home-cal__poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .home-cal__body {
@@ -4482,18 +4464,13 @@ html.tg-webapp .sh-anime-load-bg {
   }
 
   .home-cal__list::before {
-    left: 33px;
+    left: 22px;
   }
 
   .home-cal__row {
-    grid-template-columns: 44px 48px minmax(0, 1fr) 32px;
+    grid-template-columns: 44px minmax(0, 1fr) 32px;
     gap: 10px;
     padding-right: 0;
-  }
-
-  .home-cal__poster {
-    width: 48px;
-    height: 66px;
   }
 
   .home-cal__go {

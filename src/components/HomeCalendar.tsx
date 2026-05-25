@@ -1,6 +1,4 @@
 import { useEffect, useState } from "react";
-import { PosterImage } from "./PosterImage";
-import { resolveCalendarPoster } from "../lib/calendarPosterCache";
 import { ensureHomeCalendar } from "../lib/homePreload";
 import type { CalendarAiringItem, TodayCalendarPayload } from "../lib/homeCalendar";
 
@@ -108,16 +106,6 @@ export function HomeCalendar({ onSelectAnime }: HomeCalendarProps) {
             >
               <button type="button" className="home-cal__row" onClick={() => open(item)}>
                 <span className="home-cal__time">{item.airs_time}</span>
-                <span className="home-cal__poster" aria-hidden="true">
-                  <PosterImage
-                    src={resolveCalendarPoster(item)}
-                    width={56}
-                    height={76}
-                    loading="eager"
-                    fetchPriority={index < 6 ? "high" : undefined}
-                    instant={index < 6}
-                  />
-                </span>
                 <span className="home-cal__body">
                   <span className="home-cal__anime-title">{item.title}</span>
                   <span className="home-cal__meta">
