@@ -221,7 +221,7 @@ export const RECOMMENDED_ANIME: TopAnimeEntry[] = TOP_ANIME_ALL_TIME.slice(0, 9)
   rank: index + 1,
 }));
 
-const ASSETS_CACHE_BUST = "poster";
+const ASSETS_CACHE_BUST = "20260525";
 
 export function topAnimeHeroUrl(shikiId: number): string {
   return `/api/v1/assets/anime/${shikiId}/hero.jpg?v=${ASSETS_CACHE_BUST}`;

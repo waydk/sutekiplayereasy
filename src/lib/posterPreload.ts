@@ -2,8 +2,10 @@
 
 const hinted = new Set<string>();
 
+const POSTER_CACHE_BUST = "20260525";
+
 export function posterAssetUrl(animeId: number): string {
-  return `/api/v1/assets/anime/${animeId}/poster.jpg?v=poster`;
+  return `/api/v1/assets/anime/${animeId}/poster.jpg?v=${POSTER_CACHE_BUST}`;
 }
 
 function isCrossOriginPoster(url: string): boolean {
