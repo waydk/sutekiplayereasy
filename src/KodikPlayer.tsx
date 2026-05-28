@@ -1772,29 +1772,31 @@ export function KodikPlayer() {
       const now = Date.now();
       if (now - lastSaved < 4000) return;
       lastSaved = now;
-      flushWatchProgress(id, tid, ep, t, v.duration);
+      flushWatchProgress(id, tid, ep, t, v.duration, animeTitle || undefined);
     };
-    const onPause = () => flushWatchProgress(id, tid, ep, v.currentTime, v.duration);
+    const onPause = () =>
+      flushWatchProgress(id, tid, ep, v.currentTime, v.duration, animeTitle || undefined);
     const onHide = () => {
       if (document.visibilityState === "hidden") {
-        flushWatchProgress(id, tid, ep, v.currentTime, v.duration);
+        flushWatchProgress(id, tid, ep, v.currentTime, v.duration, animeTitle || undefined);
       }
     };
-    const onEnded = () => flushWatchProgress(id, tid, ep, v.duration, v.duration);
+    const onEnded = () =>
+      flushWatchProgress(id, tid, ep, v.duration, v.duration, animeTitle || undefined);
     v.addEventListener("timeupdate", persist);
     v.addEventListener("pause", onPause);
     v.addEventListener("ended", onEnded);
     document.addEventListener("visibilitychange", onHide);
     window.addEventListener("pagehide", onPause);
     return () => {
-      flushWatchProgress(id, tid, ep, v.currentTime, v.duration);
+      flushWatchProgress(id, tid, ep, v.currentTime, v.duration, animeTitle || undefined);
       v.removeEventListener("timeupdate", persist);
       v.removeEventListener("pause", onPause);
       v.removeEventListener("ended", onEnded);
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", onPause);
     };
-  }, [animeId, translationId, episode]);
+  }, [animeId, translationId, episode, animeTitle]);
 
   // Прогрев следующей серии: (1) early — через 8с после старта; (2) при 60% длительности.
   const nextEpisodePrefetchedRef = useRef<string | null>(null);

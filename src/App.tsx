@@ -1,8 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { whenApiBaseReady } from "./apiBase";
 import { HomePage } from "./HomePage";
-import { pushLaunchShikiId, useLaunchShikiId } from "./hooks/useLaunchShikiId";
+import { pushLaunchShikiId, pushLaunchWatch, useLaunchShikiId } from "./hooks/useLaunchShikiId";
 import { warmBootstrap } from "./lib/playerCache";
+import type { ContinueWatchEntry } from "./lib/watchProgress";
 import { resolveLaunchWatch } from "./lib/watchProgress";
 
 const KodikPlayer = lazy(() =>
@@ -39,6 +40,15 @@ export function App() {
     void warmBootstrap(id, launch.translationId, launch.episode);
   }, []);
 
+  const openContinueWatch = useCallback((entry: ContinueWatchEntry) => {
+    pushLaunchWatch({
+      shikiId: entry.animeId,
+      episode: entry.episode,
+      translationId: entry.translationId,
+    });
+    void warmBootstrap(entry.animeId, entry.translationId, entry.episode);
+  }, []);
+
   if (!ready) {
     return (
       <main className="sh-page sh-app-boot" aria-busy="true">
@@ -48,7 +58,7 @@ export function App() {
   }
 
   if (!launchId) {
-    return <HomePage onSelectAnime={openAnime} />;
+    return <HomePage onSelectAnime={openAnime} onContinueWatch={openContinueWatch} />;
   }
 
   return (

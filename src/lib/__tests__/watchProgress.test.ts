@@ -3,6 +3,7 @@ import {
   flushWatchProgress,
   formatClockSec,
   formatResumeHint,
+  listContinueWatching,
   readLastWatch,
   readResumeSec,
   resolveLaunchWatch,
@@ -78,5 +79,42 @@ describe("flushWatchProgress", () => {
     expect(readResumeSec(21, "2068", 4)).toBeNull();
     expect(readLastWatch(21)?.episode).toBe(5);
     expect(readLastWatch(21)?.positionSec).toBe(0);
+  });
+
+  it("stores title on last watch", () => {
+    flushWatchProgress(21, "2068", 2, 120, 1200, "Test Anime");
+    expect(readLastWatch(21)?.title).toBe("Test Anime");
+  });
+});
+
+describe("listContinueWatching", () => {
+  it("returns empty when no progress", () => {
+    expect(listContinueWatching()).toEqual([]);
+  });
+
+  it("skips first episode with little progress", () => {
+    writeLastWatch(10, { translationId: "1", episode: 1, positionSec: 10, updatedAt: 100 });
+    expect(listContinueWatching()).toEqual([]);
+  });
+
+  it("includes entries with enough progress", () => {
+    writeLastWatch(10, {
+      translationId: "2068",
+      episode: 3,
+      positionSec: 90,
+      updatedAt: 200,
+      title: "Naruto",
+    });
+    writeLastWatch(11, {
+      translationId: "99",
+      episode: 1,
+      positionSec: 45,
+      updatedAt: 300,
+    });
+    const rows = listContinueWatching(5);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].animeId).toBe(11);
+    expect(rows[0].progressLabel).toBe("Серия 1 · продолжаем с 0:45");
+    expect(rows[1].title).toBe("Naruto");
   });
 });
