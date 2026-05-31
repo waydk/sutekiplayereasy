@@ -80,6 +80,7 @@ export async function mockPlayerApi(page: Page, opts: MockOptions = {}): Promise
           : {
               player_url: "https://example.invalid/video/720.mp4",
               kodik_max_quality: 720,
+              kodik_available_qualities: [360, 480, 720],
               ...(opts.withHls
                 ? { hls_manifest_url: "https://example.invalid/video/manifest.m3u8" }
                 : {}),
@@ -103,6 +104,7 @@ export async function mockPlayerApi(page: Page, opts: MockOptions = {}): Promise
       body: JSON.stringify({
         player_url: "https://example.invalid/video/720.mp4",
         kodik_max_quality: 720,
+        kodik_available_qualities: [360, 480, 720],
         ...(opts.withHls
           ? { hls_manifest_url: "https://example.invalid/video/manifest.m3u8" }
           : {}),

@@ -43,7 +43,7 @@ import {
 import { fetchKodikSkipMarkersAsync } from "./lib/kodikSkipFetch";
 import { formatApiError, formatVideoError, tgHaptic } from "./lib/userMessages";
 import {
-  availableQualities,
+  qualitiesFromKodikLink,
   buildEpisodesOptions,
   buildKodikEpisodesPayloadFromWatch,
   formatTranslationLabel,
@@ -85,8 +85,18 @@ import {
   formatResumeHint,
   readResumeSec,
   resolveLaunchWatch,
+  scanEpisodeProgress,
   writeResumeSec,
 } from "./lib/watchProgress";
+import {
+  readAutoNextPref,
+  readAutoSkipOpPref,
+  readTheaterPref,
+  writeAutoNextPref,
+  writeAutoSkipOpPref,
+  writeTheaterPref,
+} from "./lib/playerPrefs";
+import { heroAssetUrl, posterAssetUrl } from "./lib/posterPreload";
 import {
   normalizeSearchQuery,
   searchAnime,
@@ -123,10 +133,14 @@ type PlayStreamOptions = {
   forceMp4?: boolean;
 };
 
-const TV_KINDS = new Set(["tv", "tv_special", "tv_13", "tv_24", "tv_48"]);
+const TV_KINDS = new Set(["tv", "tv_13", "tv_24", "tv_48"]);
+/** Фильмы, OVA/ONA, спецвыпуски, клипы — это НЕ TV-сериалы (идут в «Прочее»). */
+const NON_TV_RE = /(special|movie|ova|ona|music|pv|cm|спеш|спец|фильм|клип)/i;
 function isTvChronologyKind(kind: string | null | undefined): boolean {
   const raw = String(kind || "").trim().toLowerCase();
   if (!raw) return false;
+  // Явно не сериал (в т.ч. "tv_special", "TV special") — в «Прочее».
+  if (NON_TV_RE.test(raw)) return false;
   const normalized = raw.replace(/\s+/g, "_");
   if (TV_KINDS.has(normalized)) return true;
   // Shikimori/прокси иногда отдают вид типа "TV сериал", "TV series", "tv-24".
@@ -144,6 +158,19 @@ type ChronologyItem = {
   year?: number | null;
   date?: string | null;
 };
+
+/** Человекочитаемый тип тайтла для карточек хронологии. */
+function chronoKindLabel(kind: string | null | undefined): string {
+  const k = String(kind || "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (!k) return "";
+  if (k.includes("movie") || k.includes("фильм")) return "Фильм";
+  if (k.includes("special") || k.includes("спеш") || k.includes("спец")) return "Спешл";
+  if (k.includes("ova")) return "OVA";
+  if (k.includes("ona")) return "ONA";
+  if (k.includes("music") || k.includes("клип")) return "Клип";
+  if (k.startsWith("tv") || /\btv\b/.test(k)) return "ТВ-сериал";
+  return String(kind).toUpperCase();
+}
 
 /** Обновить URL без reload — deep link / refresh совпадают с выбранным тайтлом. */
 function replaceUrlAnime(animeId: number, episode = 1, translationId?: string | null): void {
@@ -418,6 +445,14 @@ export function KodikPlayer() {
   const [awaitingFirstFrame, setAwaitingFirstFrame] = useState(false);
   const [resumeHintSec, setResumeHintSec] = useState<number | null>(null);
   const [resumeHintEpisode, setResumeHintEpisode] = useState<number | null>(null);
+  const [theaterMode, setTheaterMode] = useState(() => readTheaterPref());
+  const [autoSkipOp, setAutoSkipOp] = useState(() => readAutoSkipOpPref());
+  const [autoNextEp, setAutoNextEp] = useState(() => readAutoNextPref());
+  const [playerTab, setPlayerTab] = useState<"tr" | "ep" | "chrono">("ep");
+  const [autoNextCountdown, setAutoNextCountdown] = useState<number | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [searchExpanded, setSearchExpanded] = useState(false);
 
   useEffect(() => {
     if (resumeHintSec == null) return;
@@ -437,6 +472,31 @@ export function KodikPlayer() {
       v.removeEventListener("seeked", dismiss);
     };
   }, [resumeHintSec]);
+
+  useEffect(() => {
+    autoSkipOpRef.current = autoSkipOp;
+  }, [autoSkipOp]);
+
+  useEffect(() => {
+    autoNextEpRef.current = autoNextEp;
+  }, [autoNextEp]);
+
+  useEffect(() => {
+    writeTheaterPref(theaterMode);
+    if (typeof document !== "undefined") {
+      document.body.classList.toggle("pl-theater", theaterMode);
+    }
+    return () => {
+      if (typeof document !== "undefined") document.body.classList.remove("pl-theater");
+    };
+  }, [theaterMode]);
+
+  useEffect(() => {
+    if (linkCopied) {
+      const t = window.setTimeout(() => setLinkCopied(false), 2200);
+      return () => clearTimeout(t);
+    }
+  }, [linkCopied]);
 
   const waitGifUrl = useMemo(() => {
     const raw = import.meta.env.VITE_PLAYER_WAIT_GIF_URL;
@@ -493,6 +553,8 @@ export function KodikPlayer() {
     return t.animeId === animeId && t.episode === episode && t.translationId === translationId;
   }
   const openingAutoSkippedRef = useRef(false);
+  const autoSkipOpRef = useRef(autoSkipOp);
+  const autoNextEpRef = useRef(autoNextEp);
   const playStreamRef = useRef<((opts: PlayStreamOptions) => Promise<void>) | null>(null);
   const loadAnimeAndPlayRef = useRef<
     ((id: number, preferredTid: string | null, ep: number) => Promise<string | null>) | null
@@ -925,8 +987,7 @@ export function KodikPlayer() {
   }, []);
 
   const setupQualityFromLink = useCallback((linkObj: KodikLinkResponse, mp4Url: string) => {
-    const mq = linkObj && typeof linkObj === "object" ? linkObj.kodik_max_quality : null;
-    const list = availableQualities(mq ?? undefined);
+    const list = qualitiesFromKodikLink(linkObj);
     const inferred = inferQualityFromUrl(mp4Url);
     const current = inferred && list.includes(inferred) ? inferred : list[list.length - 1];
     setQualityOptions(list);
@@ -1031,7 +1092,7 @@ export function KodikPlayer() {
             if (!m || reqId !== playReqIdRef.current) return;
             setSkipMarkers(m);
             const vNow = videoRef.current;
-            if (vNow && !openingAutoSkippedRef.current && shouldAutoSkipOpening(m, resumeSec, vNow.currentTime)) {
+            if (vNow && !openingAutoSkippedRef.current && autoSkipOpRef.current && shouldAutoSkipOpening(m, resumeSec, vNow.currentTime)) {
               openingAutoSkippedRef.current = true;
               seekVideoToSec(vNow, m.openingEndSec!);
             }
@@ -1082,7 +1143,7 @@ export function KodikPlayer() {
         const tryAutoSkipOpening = () => {
           const vNow = videoRef.current;
           if (!vNow || openingAutoSkippedRef.current) return;
-          if (!shouldAutoSkipOpening(markersForEp, resumeSec, vNow.currentTime)) return;
+          if (!autoSkipOpRef.current || !shouldAutoSkipOpening(markersForEp, resumeSec, vNow.currentTime)) return;
           openingAutoSkippedRef.current = true;
           seekVideoToSec(vNow, markersForEp.openingEndSec!);
         };
@@ -1173,6 +1234,7 @@ export function KodikPlayer() {
 
         if (tryHls) {
           setStatus("загружаю HLS…");
+          setupQualityFromLink(out, mp4);
           setRawMp4(mp4);
           v.pause();
           v.removeAttribute("src");
@@ -1290,7 +1352,7 @@ export function KodikPlayer() {
               trace.manifestMs = nowMs() - startedAt;
               const pick = buildHlsQualityPick(hls.levels);
               hlsQualityPickRef.current = pick;
-              setQualityOptions(pick.heights);
+              setupQualityFromLink(out, mp4);
               const initialLevelIdx = pickInitialHlsLevelIdx(pick, netHints.maxStartHeight);
               if (initialLevelIdx != null) {
                 hls.startLevel = initialLevelIdx;
@@ -1605,19 +1667,15 @@ export function KodikPlayer() {
   const switchQuality = useCallback(async function switchQuality(nextQ: number) {
       if (hlsMode) {
         const hls = hlsRef.current;
-        if (!hls) {
-          setStatus("Нативный HLS (Safari): переключение качества недоступно.", { error: false });
-          return;
-        }
         const pick = hlsQualityPickRef.current;
         const oi = pick.heights.indexOf(nextQ);
-        if (oi < 0) return;
-        const levelIdx = pick.levelIdxs[oi];
-        if (levelIdx === undefined) return;
-        hls.currentLevel = levelIdx;
-        setSelectedQuality(nextQ);
-        setStatus(`качество: ${nextQ}p`);
-        return;
+        if (hls && oi >= 0 && pick.heights.length > 1 && pick.levelIdxs[oi] !== undefined) {
+          hls.currentLevel = pick.levelIdxs[oi]!;
+          setSelectedQuality(nextQ);
+          setStatus(`качество: ${nextQ}p`);
+          return;
+        }
+        destroyHls();
       }
       const v = videoRef.current;
       if (!v) return;
@@ -1657,7 +1715,7 @@ export function KodikPlayer() {
       };
       v.addEventListener("canplay", onReady);
     },
-    [hlsMode, rawMp4, setStatus],
+    [destroyHls, hlsMode, rawMp4, setStatus],
   );
 
   switchQualityRef.current = (q) => {
@@ -1680,13 +1738,15 @@ export function KodikPlayer() {
     syncPlyrQualityMenu(plyr, qualityOptions, selected);
   }, [activeQuality, qualityOptions, qualitySelectDisabled]);
 
-  const activeTranslationLabelForDebug = useMemo(() => {
+  const activeTranslationLabel = useMemo(() => {
     const trs = watch && Array.isArray(watch.translations) ? watch.translations : [];
     const tr = trs.find((x) => translationRowHasId(x) && translationRowIdString(x) === String(translationId));
     if (tr) return formatTranslationLabel(tr);
     if (translationId) return `id ${translationId}`;
     return "—";
   }, [watch, translationId]);
+
+  const activeTranslationLabelForDebug = activeTranslationLabel;
 
   const playbackDebugText = useMemo(() => {
     const { current, duration, paused } = playbackDebug;
@@ -2063,6 +2123,107 @@ export function KodikPlayer() {
     onPickEpisode(target);
   }, [canNextEpisode, currentEpisodeIndex, navEpisodeNumbers, onPickEpisode]);
 
+  const copyShareLink = useCallback(() => {
+    if (typeof window === "undefined") return;
+    try {
+      void navigator.clipboard.writeText(window.location.href).then(() => setLinkCopied(true));
+    } catch {
+      /* */
+    }
+  }, []);
+
+  const toggleTheater = useCallback(() => {
+    setTheaterMode((v) => !v);
+    tgHaptic("light");
+  }, []);
+
+  const requestPiP = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || typeof document === "undefined") return;
+    const doc = document as Document & {
+      pictureInPictureEnabled?: boolean;
+      pictureInPictureElement?: Element | null;
+    };
+    if (!doc.pictureInPictureEnabled) return;
+    if (doc.pictureInPictureElement === v) {
+      void (document as Document & { exitPictureInPicture?: () => Promise<void> }).exitPictureInPicture?.();
+      return;
+    }
+    void (v as HTMLVideoElement & { requestPictureInPicture?: () => Promise<void> }).requestPictureInPicture?.();
+  }, []);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onEnded = () => {
+      if (!autoNextEpRef.current || !canNextEpisode) return;
+      setAutoNextCountdown(8);
+    };
+    v.addEventListener("ended", onEnded);
+    return () => v.removeEventListener("ended", onEnded);
+  }, [canNextEpisode, animeId, translationId, episode]);
+
+  useEffect(() => {
+    if (autoNextCountdown === null) return;
+    if (autoNextCountdown <= 0) {
+      setAutoNextCountdown(null);
+      goNextEpisode();
+      return;
+    }
+    const t = window.setTimeout(() => setAutoNextCountdown((c) => (c == null ? null : c - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [autoNextCountdown, goNextEpisode]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "ArrowRight" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        goNextEpisode();
+      } else if (e.key === "ArrowLeft" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        goPrevEpisode();
+      } else if (e.key === "o" || e.key === "O") {
+        e.preventDefault();
+        skipOpening();
+      } else if (e.key === "e" || e.key === "E") {
+        e.preventDefault();
+        skipEnding();
+      } else if (e.key === "t" || e.key === "T") {
+        e.preventDefault();
+        toggleTheater();
+      } else if (e.key === "c" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        copyShareLink();
+      } else if (e.key === "?") {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+      } else if (e.key === "Escape") {
+        if (autoNextCountdown != null) setAutoNextCountdown(null);
+        if (showShortcuts) setShowShortcuts(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    autoNextCountdown,
+    copyShareLink,
+    goNextEpisode,
+    goPrevEpisode,
+    showShortcuts,
+    skipEnding,
+    skipOpening,
+    toggleTheater,
+  ]);
+
+  const episodeProgressMap = useMemo(() => {
+    const id = Number(animeId) || 0;
+    const tid = String(translationId || "").trim();
+    if (!id || !tid) return new Map<number, number>();
+    return scanEpisodeProgress(id, tid);
+  }, [animeId, translationId, episode, playbackDebug.current]);
+
   const showEpisodeJumpHint = useCallback((text: string, error: boolean) => {
     if (episodeJumpHintTimerRef.current) clearTimeout(episodeJumpHintTimerRef.current);
     setEpisodeJumpHint({ text, error });
@@ -2153,7 +2314,7 @@ export function KodikPlayer() {
   const renderChronologyStrip = (items: ChronologyItem[], title: string, key: string) => {
     if (!items.length) return null;
     return (
-      <div className={`sh-card sh-chronology sh-chronology-${key}`} aria-label={title}>
+      <div className={`sh-card sh-chronology pl-chrono sh-chronology-${key}`} aria-label={title}>
         <div className="sh-chronology-head">
           <strong>{title}</strong>
           <div className="sh-chronology-meta">{items.length}</div>
@@ -2163,7 +2324,7 @@ export function KodikPlayer() {
             const cardTitle = c.title || `#${c.anime_id}`;
             const poster = c.poster;
             const active = animeId != null && Number(animeId) === Number(c.anime_id);
-            const meta = [c.kind ? String(c.kind).toUpperCase() : null, c.year ? String(c.year) : null]
+            const meta = [chronoKindLabel(c.kind) || null, c.year ? String(c.year) : null]
               .filter(Boolean)
               .join(" • ");
             return (
@@ -2191,6 +2352,7 @@ export function KodikPlayer() {
                   )}
                 </span>
                 <span className="sh-chronology-main">
+                  {active ? <span className="sh-chronology-active-tag">СЕЙЧАС СМОТРИТЕ</span> : null}
                   <span className="sh-chronology-title">{cardTitle}</span>
                   {meta ? <span className="sh-chronology-sub">{meta}</span> : null}
                 </span>
@@ -2214,25 +2376,80 @@ export function KodikPlayer() {
     translationsCount === 0;
 
   return (
-    <main className="sh-page" aria-busy={busy || loadingBootstrap || loadingSearch}>
-      <div className="sh-shell">
-        <div className="sh-card sh-search" role="search">
-          <div className="sh-search-top">
-            <div className="sh-search-brand" aria-hidden>
-              <span className="sh-brand-suteki">SUTEKI</span>
-              <span className="sh-brand-hub">hub</span>
-            </div>
-            {!inTelegram ? (
-              <button
-                type="button"
-                className="sh-home-link"
-                onClick={() => pushLaunchShikiId(null)}
-              >
-                ← Главная
-              </button>
-            ) : null}
+    <main
+      className={`sh-page pl-page${theaterMode ? " pl-page--theater" : ""}`}
+      aria-busy={busy || loadingBootstrap || loadingSearch}
+    >
+      {animeId ? (
+        <div className="pl-backdrop" aria-hidden>
+          <img src={heroAssetUrl(Number(animeId))} alt="" />
+        </div>
+      ) : null}
+
+      <header className="pl-topbar">
+        <div className="pl-topbar__left">
+          {!inTelegram ? (
+            <button type="button" className="pl-icon-btn" onClick={() => pushLaunchShikiId(null)} title="Главная">
+              ←
+            </button>
+          ) : null}
+          <span className="pl-brand" aria-hidden>
+            SUTEKI<span>hub</span>
+          </span>
+        </div>
+        {animeTitle ? (
+          <h1 className="pl-topbar__title" title={animeTitle}>
+            {animeTitle}
+          </h1>
+        ) : (
+          <span className="pl-topbar__title pl-topbar__title--ph">Выберите аниме</span>
+        )}
+        <div className="pl-topbar__actions">
+          <button
+            type="button"
+            className={`pl-icon-btn${searchExpanded ? " pl-icon-btn--active" : ""}`}
+            onClick={() => setSearchExpanded((v) => !v)}
+            aria-expanded={searchExpanded}
+            title="Поиск"
+          >
+            ⌕
+          </button>
+          <button
+            type="button"
+            className={`pl-icon-btn${theaterMode ? " pl-icon-btn--active" : ""}`}
+            onClick={toggleTheater}
+            title="Кинотеатр (T)"
+          >
+            ⛶
+          </button>
+          <button type="button" className="pl-icon-btn" onClick={() => setShowShortcuts((v) => !v)} title="Горячие клавиши (?)">
+            ?
+          </button>
+        </div>
+      </header>
+
+      {showShortcuts ? (
+        <div className="pl-shortcuts" role="dialog" aria-label="Горячие клавиши">
+          <div className="pl-shortcuts__head">
+            <strong>Горячие клавиши</strong>
+            <button type="button" className="pl-icon-btn pl-icon-btn--sm" onClick={() => setShowShortcuts(false)}>
+              ✕
+            </button>
           </div>
-          {animeTitle ? <p className="sh-search-anime">{animeTitle}</p> : null}
+          <ul className="pl-shortcuts__list">
+            <li><kbd>←</kbd><kbd>→</kbd> предыдущая / следующая серия</li>
+            <li><kbd>O</kbd> пропустить опенинг</li>
+            <li><kbd>E</kbd> пропустить эндинг</li>
+            <li><kbd>T</kbd> режим кинотеатра</li>
+            <li><kbd>Ctrl</kbd>+<kbd>C</kbd> скопировать ссылку</li>
+            <li><kbd>?</kbd> эта подсказка</li>
+            <li><kbd>Esc</kbd> отмена автоперехода</li>
+          </ul>
+        </div>
+      ) : null}
+
+      <div className={`pl-search-dock${searchExpanded ? " pl-search-dock--open" : ""}`} role="search">
+        <div className="pl-search-dock__inner">
           <div className="sh-search-row">
             <input
               type="search"
@@ -2267,9 +2484,11 @@ export function KodikPlayer() {
             </button>
           </div>
         </div>
+      </div>
 
+      <div className="pl-shell sh-shell">
         {kodikNotConfigured ? (
-          <div className="sh-card sh-kodik-notice" role="status">
+          <div className="pl-notice" role="status">
             <p className="sh-kodik-notice-title">Kodik не подключён к API</p>
             <p className="sh-kodik-notice-text">
               Здесь не будет озвучек и серий, пока на сервере не реализованы эндпоинты Kodik.
@@ -2278,23 +2497,19 @@ export function KodikPlayer() {
         ) : null}
 
         {searchErr ? (
-          <div className="sh-card sh-search-feedback">
-            <div className="sh-status error" role="alert">
-              {searchErr}
-            </div>
+          <div className="pl-notice pl-notice--error" role="alert">
+            {searchErr}
           </div>
         ) : null}
 
         {!searchErr && searchDone && !loadingSearch && searchResults.length === 0 && normalizeSearchQuery(query) ? (
-          <div className="sh-card sh-search-feedback">
-            <div className="sh-status" role="status">
-              Ничего не найдено. Попробуйте уточнить запрос.
-            </div>
+          <div className="pl-notice" role="status">
+            Ничего не найдено. Попробуйте уточнить запрос.
           </div>
         ) : null}
 
         {searchResults.length ? (
-          <div className="sh-card sh-search-results" aria-label="Результаты поиска">
+          <div className="pl-search-results" aria-label="Результаты поиска">
             <div className="sh-search-strip" role="list">
               {searchResults.map((r) => {
                 const title = r.title || `#${r.anime_id}`;
@@ -2330,27 +2545,26 @@ export function KodikPlayer() {
           </div>
         ) : null}
 
-        <div className="sh-card sh-player-card">
-          <div className="sh-stage sh-stage--mylist-collapsed">
-            <div className="sh-video-pane">
-              <div className="sh-video-wrap">
-                <div className="sh-current-episode-badge" aria-live="polite">
-                  Серия {Math.max(1, Math.floor(Number(episode) || 1))}
-                </div>
-                <video
-                  ref={videoRef}
-                  id="video"
-                  playsInline
-                  autoPlay
-                  muted={shouldAutoplayMuted()}
-                  preload="auto"
-                  aria-label="Видео эпизода"
-                  onWaiting={() => setBuffering(true)}
-                  onPlaying={() => setBuffering(false)}
-                  onCanPlay={() => setBuffering(false)}
-                  onLoadedMetadata={onVideoTimelineRefreshed}
-                  onDurationChange={onVideoTimelineRefreshed}
-                />
+        <section className="pl-stage">
+          <div className="pl-video-pane sh-video-pane">
+            <div className="pl-video-wrap sh-video-wrap">
+              <div className="pl-ep-live" aria-live="polite">
+                EP {Math.max(1, Math.floor(Number(episode) || 1))}
+              </div>
+              <video
+                ref={videoRef}
+                id="video"
+                playsInline
+                autoPlay
+                muted={shouldAutoplayMuted()}
+                preload="auto"
+                aria-label="Видео эпизода"
+                onWaiting={() => setBuffering(true)}
+                onPlaying={() => setBuffering(false)}
+                onCanPlay={() => setBuffering(false)}
+                onLoadedMetadata={onVideoTimelineRefreshed}
+                onDurationChange={onVideoTimelineRefreshed}
+              />
                 {showVideoBufferHint ? (
                   <div className="sh-video-buffer-hint" role="status" aria-live="polite">
                     <span className="sh-video-buffer-spinner" aria-hidden />
@@ -2477,152 +2691,197 @@ export function KodikPlayer() {
                     </span>
                   </button>
                 ) : null}
-              </div>
+                {autoNextCountdown != null ? (
+                  <div className="pl-autonext" role="status" aria-live="polite">
+                    <div className="pl-autonext__inner">
+                      <span className="pl-autonext__title">Следующая серия через {autoNextCountdown}…</span>
+                      <div className="pl-autonext__actions">
+                        <button type="button" className="pl-btn pl-btn--ghost" onClick={() => setAutoNextCountdown(null)}>
+                          Отмена
+                        </button>
+                        <button type="button" className="pl-btn pl-btn--primary" onClick={goNextEpisode}>
+                          Смотреть сейчас
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
             </div>
+          </div>
 
-            {showStartupTrace && startupBreakdown !== "—" ? (
-              <p className="sh-startup-trace" aria-live="polite">
-                {startupBreakdown}
-              </p>
-            ) : null}
-
-            {resumeHintSec != null && resumeHintSec > 0 ? (
-              <div className="sh-resume-hint" role="status" aria-live="polite">
-                <span>
-                  {resumeHintEpisode != null
-                    ? formatResumeHint(resumeHintEpisode, resumeHintSec)
-                    : `Продолжаем с ${formatClockSec(resumeHintSec)}`}
-                </span>
-                <button
-                  type="button"
-                  className="sh-btn"
-                  onClick={() => {
-                    const v = videoRef.current;
-                    const id = Number(animeId) || 0;
-                    const tid = String(translationId || "");
-                    const ep = Math.floor(Number(episode) || 1);
-                    if (v) {
-                      try {
-                        v.currentTime = 0;
-                        flushWatchProgress(id, tid, ep, 0);
-                      } catch {
-                        /* */
-                      }
-                    }
-                    setResumeHintSec(null);
-                    setResumeHintEpisode(null);
-                  }}
-                >
-                  С начала
-                </button>
-                <button
-                  type="button"
-                  className="sh-btn primary"
-                  onClick={() => {
-                    setResumeHintSec(null);
-                    setResumeHintEpisode(null);
-                  }}
-                >
-                  OK
-                </button>
-              </div>
-            ) : null}
-
-            <div className="sh-player-bar" aria-label="Управление плеером">
-              <div className="sh-player-bar-group">
-                <span className="sh-player-bar-label">Пропуск</span>
-                <div className="sh-skip-group">
-                  <button
-                    type="button"
-                    className="sh-mini-btn"
-                    disabled={!skipUi.canOpening}
-                    title={
-                      skipUi.showNoMarkersHint
-                        ? "Таймкоды OP/ED не переданы API"
-                        : !skipMarkers?.openingEndSec
-                          ? "Нет таймкода конца опенинга"
-                          : "Пропустить опенинг"
-                    }
-                    aria-label="Пропустить опенинг"
-                    onClick={() => skipOpening()}
-                  >
-                    OP
-                  </button>
-                  <button
-                    type="button"
-                    className="sh-mini-btn"
-                    disabled={!skipUi.canEnding}
-                    title={
-                      skipUi.showNoMarkersHint
-                        ? "Таймкоды OP/ED не переданы API"
-                        : skipUi.endingNeedsMeta
-                          ? "Дождитесь метаданных длительности"
-                          : "Пропустить эндинг"
-                    }
-                    aria-label="Пропустить эндинг"
-                    onClick={() => skipEnding()}
-                  >
-                    ED
-                  </button>
-                </div>
-              </div>
-              <div className="sh-player-bar-group">
-                <span className="sh-player-bar-label">Серия</span>
-                <div className="sh-skip-group">
-                  <button
-                    type="button"
-                    className="sh-mini-btn"
-                    onClick={goPrevEpisode}
-                    disabled={!canPrevEpisode || loadingBootstrap}
-                    aria-label="Предыдущая серия"
-                    title="Предыдущая серия"
-                  >
-                    ◀ Prev
-                  </button>
-                  <button type="button" className="sh-mini-btn sh-episode-now" disabled>
-                    #{Math.max(1, Math.floor(Number(episode) || 1))}
-                  </button>
-                  <button
-                    type="button"
-                    className="sh-mini-btn"
-                    onClick={goNextEpisode}
-                    disabled={!canNextEpisode || loadingBootstrap}
-                    aria-label="Следующая серия"
-                    title="Следующая серия"
-                  >
-                    Next ▶
-                  </button>
-                </div>
-              </div>
-              <div className="sh-player-bar-group">
-                <span className="sh-player-bar-label">Качество</span>
-                <select
-                  className="sh-quality-select"
-                  aria-label="Качество видео"
-                  value={activeQuality === "" ? "" : String(activeQuality)}
-                  disabled={qualitySelectDisabled}
-                  onChange={(e) => {
-                    const next = Number(e.target.value);
-                    if (Number.isFinite(next) && next > 0) void switchQuality(next);
-                  }}
-                >
-                  {qualityOptions.length === 0 ? (
-                    <option value="">—</option>
-                  ) : (
-                    [...qualityOptions]
-                      .sort((a, b) => b - a)
-                      .map((q) => (
-                        <option key={q} value={q}>
-                          {q}p
-                        </option>
-                      ))
-                  )}
-                </select>
-              </div>
-              {qualitySelectDisabled && hlsNativeQualityLock ? (
-                <p className="sh-player-bar-hint">В Safari качество выбирает система</p>
+          <div className="pl-now">
+            <div className="pl-now__info">
+              {animeId ? (
+                <img
+                  className="pl-now__poster"
+                  src={posterAssetUrl(Number(animeId))}
+                  alt=""
+                  width={48}
+                  height={68}
+                />
               ) : null}
+              <div className="pl-now__text">
+                <span className="pl-now__ep">Серия {Math.max(1, Math.floor(Number(episode) || 1))}</span>
+                <span className="pl-now__tr">{activeTranslationLabel}</span>
+              </div>
             </div>
+            <div className="pl-now__actions">
+              <button type="button" className="pl-chip-btn" onClick={copyShareLink} title="Скопировать ссылку">
+                {linkCopied ? "✓ Скопировано" : "Поделиться"}
+              </button>
+              <button type="button" className="pl-chip-btn" onClick={requestPiP} title="Picture-in-Picture">
+                PiP
+              </button>
+              <button
+                type="button"
+                className={`pl-chip-btn${autoSkipOp ? " pl-chip-btn--on" : ""}`}
+                onClick={() => {
+                  setAutoSkipOp((v) => {
+                    writeAutoSkipOpPref(!v);
+                    return !v;
+                  });
+                }}
+                title="Автопропуск OP"
+              >
+                Auto OP
+              </button>
+              <button
+                type="button"
+                className={`pl-chip-btn${autoNextEp ? " pl-chip-btn--on" : ""}`}
+                onClick={() => {
+                  setAutoNextEp((v) => {
+                    writeAutoNextPref(!v);
+                    return !v;
+                  });
+                }}
+                title="Автопереход к следующей серии"
+              >
+                Auto Next
+              </button>
+            </div>
+          </div>
+
+          {showStartupTrace && startupBreakdown !== "—" ? (
+            <p className="sh-startup-trace" aria-live="polite">
+              {startupBreakdown}
+            </p>
+          ) : null}
+
+          {resumeHintSec != null && resumeHintSec > 0 ? (
+            <div className="pl-resume sh-resume-hint" role="status" aria-live="polite">
+              <span>
+                {resumeHintEpisode != null
+                  ? formatResumeHint(resumeHintEpisode, resumeHintSec)
+                  : `Продолжаем с ${formatClockSec(resumeHintSec)}`}
+              </span>
+              <button
+                type="button"
+                className="sh-btn"
+                onClick={() => {
+                  const v = videoRef.current;
+                  const id = Number(animeId) || 0;
+                  const tid = String(translationId || "");
+                  const ep = Math.floor(Number(episode) || 1);
+                  if (v) {
+                    try {
+                      v.currentTime = 0;
+                      flushWatchProgress(id, tid, ep, 0);
+                    } catch {
+                      /* */
+                    }
+                  }
+                  setResumeHintSec(null);
+                  setResumeHintEpisode(null);
+                }}
+              >
+                С начала
+              </button>
+              <button
+                type="button"
+                className="sh-btn primary"
+                onClick={() => {
+                  setResumeHintSec(null);
+                  setResumeHintEpisode(null);
+                }}
+              >
+                OK
+              </button>
+            </div>
+          ) : null}
+
+          <div className="pl-toolbar" aria-label="Управление плеером">
+            <div className="pl-toolbar__group">
+              <button
+                type="button"
+                className="pl-tool-btn"
+                disabled={!skipUi.canOpening}
+                title="Пропустить опенинг (O)"
+                aria-label="Пропустить опенинг"
+                onClick={() => skipOpening()}
+              >
+                <span className="pl-tool-btn__icon">⏭</span>
+                <span>OP</span>
+              </button>
+              <button
+                type="button"
+                className="pl-tool-btn"
+                disabled={!skipUi.canEnding}
+                title="Пропустить эндинг (E)"
+                aria-label="Пропустить эндинг"
+                onClick={() => skipEnding()}
+              >
+                <span className="pl-tool-btn__icon">⏭</span>
+                <span>ED</span>
+              </button>
+            </div>
+            <div className="pl-toolbar__group pl-toolbar__group--nav">
+              <button
+                type="button"
+                className="pl-nav-btn"
+                onClick={goPrevEpisode}
+                disabled={!canPrevEpisode || loadingBootstrap}
+                aria-label="Предыдущая серия"
+              >
+                ◀
+              </button>
+              <span className="pl-nav-ep">#{Math.max(1, Math.floor(Number(episode) || 1))}</span>
+              <button
+                type="button"
+                className="pl-nav-btn pl-nav-btn--next"
+                onClick={goNextEpisode}
+                disabled={!canNextEpisode || loadingBootstrap}
+                aria-label="Следующая серия"
+              >
+                ▶
+              </button>
+            </div>
+            <div className="pl-toolbar__group">
+              <select
+                className="pl-quality"
+                aria-label="Качество видео"
+                value={activeQuality === "" ? "" : String(activeQuality)}
+                disabled={qualitySelectDisabled}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  if (Number.isFinite(next) && next > 0) void switchQuality(next);
+                }}
+              >
+                {qualityOptions.length === 0 ? (
+                  <option value="">—</option>
+                ) : (
+                  [...qualityOptions]
+                    .sort((a, b) => b - a)
+                    .map((q) => (
+                      <option key={q} value={q}>
+                        {q}p
+                      </option>
+                    ))
+                )}
+              </select>
+            </div>
+            {qualitySelectDisabled && hlsNativeQualityLock ? (
+              <p className="pl-toolbar__hint">В Safari качество выбирает система</p>
+            ) : null}
           </div>
 
           {geoBlocked ? (
@@ -2631,7 +2890,7 @@ export function KodikPlayer() {
             </p>
           ) : null}
           {videoErr ? (
-            <div className={`sh-status error`} role="alert">
+            <div className="pl-notice pl-notice--error" role="alert">
               {videoErr}
               <span style={{ display: "block", marginTop: 8 }}>
                 <button type="button" className="sh-btn" onClick={() => void playSelected()}>
@@ -2640,170 +2899,195 @@ export function KodikPlayer() {
               </span>
             </div>
           ) : null}
-        </div>
+        </section>
 
-        <div className="sh-card sh-episodes-bar">
-          <div className="sh-trbar" aria-label="Озвучка">
-            <div className="sh-trbar-head">
-              <strong>ОЗВУЧКА</strong>
-              <div className="sh-tr-meta">
-                <span id="trCount">{translationsFiltered.length}</span>
-                {translationsCount > 0 && translationsFiltered.length !== translationsCount ? (
-                  <span className="sh-tr-meta-total"> / {translationsCount}</span>
-                ) : null}
-              </div>
-            </div>
-            {translationsCount > 0 ? (
-              <div className="sh-trbar-controls">
-                <input
-                  id="trSearch"
-                  className="sh-input sh-trbar-search"
-                  placeholder="Поиск студии…"
-                  value={trSearch}
-                  onChange={(e) => setTrSearch(e.target.value)}
-                  aria-label="Фильтр озвучек"
-                />
-              </div>
-            ) : null}
-            <div className="sh-tr-strip" aria-label="Список озвучек">
-              {geoBlocked ? (
-                <div className="sh-tr-placeholder">Озвучки недоступны в вашем регионе.</div>
-              ) : showTranslationsLoading ? (
-                <div className="sh-tr-placeholder">Загружаю озвучки…</div>
-              ) : showTranslationsEmpty ? (
-                <div className="sh-tr-placeholder">Озвучки не найдены для этого тайтла.</div>
-              ) : translationsForStrip.length === 0 && translationsCount > 0 ? (
-                <div className="sh-tr-placeholder">Нет совпадений по фильтру.</div>
-              ) : (
-                translationsForStrip.map((t) => {
-                  const id = translationRowIdString(t);
-                  const active = String(translationId) === id;
-                  const label = formatTranslationLabel(t);
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      className={`sh-tr-chip${active ? " active" : ""}`}
-                      onClick={() => selectTranslation(id)}
-                      disabled={loadingBootstrap}
-                      title={label}
-                      aria-label={`Озвучка: ${label}`}
-                      aria-current={active ? "true" : undefined}
-                    >
-                      <span className="sh-tr-chip-title">{label}</span>
-                      <span className="sh-tr-chip-go" aria-hidden>
-                        ▶
-                      </span>
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          <div className="sh-episodes-head">
-            <strong>СЕРИИ</strong>
-            <div className="sh-episodes-head-actions">
-              <div className="sh-episodes-meta" id="episodesMeta">
-                {episodesMeta}
-              </div>
-              <div className="sh-episodes-nav">
-                <button
-                  type="button"
-                  className="sh-mini-btn"
-                  onClick={goPrevEpisode}
-                  disabled={!canPrevEpisode || loadingBootstrap}
-                  aria-label="Предыдущая серия"
-                >
-                  ◀
-                </button>
-                <button
-                  type="button"
-                  className="sh-mini-btn"
-                  onClick={goNextEpisode}
-                  disabled={!canNextEpisode || loadingBootstrap}
-                  aria-label="Следующая серия"
-                >
-                  ▶
-                </button>
-              </div>
-            </div>
-          </div>
-          <form
-            className="sh-episodes-jump"
-            onSubmit={(e) => {
-              e.preventDefault();
-              goToEpisodeFromInput();
-            }}
-          >
-            <label className="sh-episodes-jump-label" htmlFor="episodeJump">
-              Перейти к серии
-            </label>
-            <input
-              id="episodeJump"
-              className="sh-input sh-episodes-jump-input"
-              inputMode="numeric"
-              placeholder="№"
-              value={episodeJumpInput}
-              onChange={(e) => setEpisodeJumpInput(e.target.value)}
-              aria-describedby={episodeJumpHint ? "episodeJumpHint" : undefined}
-            />
-            <button type="submit" className="sh-btn sh-episodes-jump-btn">
-              Перейти
-            </button>
-            {episodeJumpHint ? (
-              <span
-                id="episodeJumpHint"
-                className={`sh-episodes-jump-hint${episodeJumpHint.error ? " error" : ""}`}
-                role="status"
+        {!theaterMode ? (
+          <section className="pl-panel">
+            <div className="pl-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                className={`pl-tab${playerTab === "tr" ? " pl-tab--active" : ""}`}
+                aria-selected={playerTab === "tr"}
+                onClick={() => setPlayerTab("tr")}
               >
-                {episodeJumpHint.text}
-              </span>
+                Озвучка
+                <span className="pl-tab__count">{translationsFiltered.length || "—"}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                className={`pl-tab${playerTab === "ep" ? " pl-tab--active" : ""}`}
+                aria-selected={playerTab === "ep"}
+                onClick={() => setPlayerTab("ep")}
+              >
+                Серии
+                <span className="pl-tab__count">{navOpts.length || "—"}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                className={`pl-tab${playerTab === "chrono" ? " pl-tab--active" : ""}`}
+                aria-selected={playerTab === "chrono"}
+                onClick={() => setPlayerTab("chrono")}
+              >
+                Связанное
+                <span className="pl-tab__count">{chronologyTv.length + chronologyOther.length || "—"}</span>
+              </button>
+            </div>
+
+            {playerTab === "tr" ? (
+              <div className="pl-tab-pane" role="tabpanel">
+                <div className="sh-trbar" aria-label="Озвучка">
+                  {translationsCount > 0 ? (
+                    <div className="sh-trbar-controls">
+                      <input
+                        id="trSearch"
+                        className="sh-input sh-trbar-search"
+                        placeholder="Поиск студии…"
+                        value={trSearch}
+                        onChange={(e) => setTrSearch(e.target.value)}
+                        aria-label="Фильтр озвучек"
+                      />
+                    </div>
+                  ) : null}
+                  <div className="pl-tr-grid" aria-label="Список озвучек">
+                    {geoBlocked ? (
+                      <div className="sh-tr-placeholder">Озвучки недоступны в вашем регионе.</div>
+                    ) : showTranslationsLoading ? (
+                      <div className="sh-tr-placeholder">Загружаю озвучки…</div>
+                    ) : showTranslationsEmpty ? (
+                      <div className="sh-tr-placeholder">Озвучки не найдены для этого тайтла.</div>
+                    ) : translationsForStrip.length === 0 && translationsCount > 0 ? (
+                      <div className="sh-tr-placeholder">Нет совпадений по фильтру.</div>
+                    ) : (
+                      translationsForStrip.map((t) => {
+                        const id = translationRowIdString(t);
+                        const active = String(translationId) === id;
+                        const label = formatTranslationLabel(t);
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            className={`pl-tr-card${active ? " pl-tr-card--active" : ""}`}
+                            onClick={() => selectTranslation(id)}
+                            disabled={loadingBootstrap}
+                            title={label}
+                            aria-label={`Озвучка: ${label}`}
+                            aria-current={active ? "true" : undefined}
+                          >
+                            <span className="pl-tr-card__label">{label}</span>
+                            {active ? <span className="pl-tr-card__badge">Сейчас</span> : null}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
             ) : null}
-          </form>
-          <div className="sh-episodes-strip" id="episodesStrip">
-            {showEpisodesLoading ? (
-              <div className="sh-tr-placeholder">Загружаю серии…</div>
-            ) : episodeOptions.length === 0 ? (
-              <div className="sh-tr-placeholder">Серии недоступны для этой озвучки.</div>
-            ) : (
-              episodeOptions.map((o) => (
-                <button
-                  id={`ep-strip-btn-${o.value}`}
-                  key={o.value}
-                  type="button"
-                  className={`sh-ep-btn${String(episode) === o.value ? " active" : ""}`}
-                  disabled={o.disabled}
-                  aria-label={`Серия ${o.value}`}
-                  aria-current={String(episode) === o.value ? "true" : undefined}
-                  onClick={() => {
-                    if (o.disabled) return;
-                    onPickEpisode(Number(o.value) || 1);
+
+            {playerTab === "ep" ? (
+              <div className="pl-tab-pane" role="tabpanel">
+                <form
+                  className="pl-ep-jump sh-episodes-jump"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    goToEpisodeFromInput();
                   }}
                 >
-                  {o.value}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
+                  <label className="sh-episodes-jump-label" htmlFor="episodeJump">
+                    Перейти к серии
+                  </label>
+                  <input
+                    id="episodeJump"
+                    className="sh-input sh-episodes-jump-input"
+                    inputMode="numeric"
+                    placeholder="№"
+                    value={episodeJumpInput}
+                    onChange={(e) => setEpisodeJumpInput(e.target.value)}
+                    aria-describedby={episodeJumpHint ? "episodeJumpHint" : undefined}
+                  />
+                  <button type="submit" className="sh-btn sh-episodes-jump-btn">
+                    Перейти
+                  </button>
+                  {episodeJumpHint ? (
+                    <span
+                      id="episodeJumpHint"
+                      className={`sh-episodes-jump-hint${episodeJumpHint.error ? " error" : ""}`}
+                      role="status"
+                    >
+                      {episodeJumpHint.text}
+                    </span>
+                  ) : null}
+                </form>
+                <div className="pl-ep-grid" id="episodesStrip">
+                  {showEpisodesLoading ? (
+                    <div className="sh-tr-placeholder">Загружаю серии…</div>
+                  ) : episodeOptions.length === 0 ? (
+                    <div className="sh-tr-placeholder">Серии недоступны для этой озвучки.</div>
+                  ) : (
+                    episodeOptions.map((o) => {
+                      const epNum = Number(o.value) || 1;
+                      const watchedSec = episodeProgressMap.get(epNum) ?? 0;
+                      const isActive = String(episode) === o.value;
+                      const hasProgress = watchedSec > 5;
+                      return (
+                        <button
+                          id={`ep-strip-btn-${o.value}`}
+                          key={o.value}
+                          type="button"
+                          className={`pl-ep-cell${isActive ? " pl-ep-cell--active" : ""}${hasProgress ? " pl-ep-cell--watched" : ""}`}
+                          disabled={o.disabled}
+                          aria-label={`Серия ${o.value}`}
+                          aria-current={isActive ? "true" : undefined}
+                          onClick={() => {
+                            if (o.disabled) return;
+                            onPickEpisode(epNum);
+                          }}
+                        >
+                          <span className="pl-ep-cell__num">{o.value}</span>
+                          {hasProgress && !isActive ? <span className="pl-ep-cell__dot" aria-hidden /> : null}
+                          {isActive && playbackDebug.duration > 0 ? (
+                            <span
+                              className="pl-ep-cell__bar"
+                              style={{
+                                width: `${Math.min(100, Math.round((playbackDebug.current / playbackDebug.duration) * 100))}%`,
+                              }}
+                              aria-hidden
+                            />
+                          ) : hasProgress ? (
+                            <span className="pl-ep-cell__bar pl-ep-cell__bar--partial" aria-hidden />
+                          ) : null}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            ) : null}
 
-        {chronologyErr ? (
-          <div className="sh-card sh-search-feedback">
-            <div className="sh-status error" role="alert">
-              Хронология: {chronologyErr}
-            </div>
-          </div>
+            {playerTab === "chrono" ? (
+              <div className="pl-tab-pane pl-tab-pane--chrono" role="tabpanel">
+                {chronologyErr ? (
+                  <div className="pl-notice pl-notice--error" role="alert">
+                    Хронология: {chronologyErr}
+                  </div>
+                ) : null}
+                {chronologyLoading && !chronology.length ? (
+                  <div className="pl-notice" role="status">
+                    Загружаю хронологию…
+                  </div>
+                ) : null}
+                {renderChronologyStrip(chronologyTv, "TV-сериалы", "tv")}
+                {renderChronologyStrip(chronologyOther, "Фильмы и прочее", "other")}
+                {!chronologyLoading && !chronologyErr && !chronologyTv.length && !chronologyOther.length ? (
+                  <div className="pl-notice">Связанные тайтлы не найдены.</div>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
         ) : null}
-        {chronologyLoading && !chronology.length ? (
-          <div className="sh-card sh-search-feedback">
-            <div className="sh-status" role="status">
-              Загружаю хронологию…
-            </div>
-          </div>
-        ) : null}
-        {renderChronologyStrip(chronologyTv, "TV", "tv")}
-        {renderChronologyStrip(chronologyOther, "Прочее", "other")}
 
         {showDebug ? (
           <div className="sh-card sh-debug">

@@ -254,6 +254,20 @@ export function availableQualities(maxQ: number | null | undefined): number[] {
   return opts.length ? opts : [360, 480, 720];
 }
 
+/** Качества из ответа Kodik API (probe на бэкенде) или fallback по kodik_max_quality. */
+export function qualitiesFromKodikLink(
+  link: { kodik_available_qualities?: number[] | null; kodik_max_quality?: number | null } | null | undefined,
+): number[] {
+  const raw = link?.kodik_available_qualities;
+  if (Array.isArray(raw) && raw.length) {
+    const uniq = [...new Set(raw.map((q) => Number(q)).filter((q) => Number.isFinite(q) && q > 0))].sort(
+      (a, b) => a - b,
+    );
+    if (uniq.length) return uniq;
+  }
+  return availableQualities(link?.kodik_max_quality);
+}
+
 export function inferQualityFromUrl(url: string): number | null {
   const m = String(url || "").match(/(?:\/|^)(360|480|720)\.mp4(?:\?|#|$)/);
   return m ? Number(m[1]) : null;

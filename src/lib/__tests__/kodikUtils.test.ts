@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   availableQualities,
+  qualitiesFromKodikLink,
   buildEpisodesOptions,
   inferQualityFromUrl,
   isMovieSeriesRange,
@@ -95,6 +96,14 @@ describe("quality utils", () => {
     /* null/0 → default */
     expect(availableQualities(null)).toEqual([360, 480, 720]);
     expect(availableQualities(0)).toEqual([360, 480, 720]);
+  });
+
+  it("qualitiesFromKodikLink prefers kodik_available_qualities from API", () => {
+    expect(qualitiesFromKodikLink({ kodik_available_qualities: [480, 720], kodik_max_quality: 720 })).toEqual([
+      480, 720,
+    ]);
+    expect(qualitiesFromKodikLink({ kodik_max_quality: 480 })).toEqual([360, 480]);
+    expect(qualitiesFromKodikLink(null)).toEqual([360, 480, 720]);
   });
 
   it("inferQualityFromUrl picks from /720.mp4", () => {
