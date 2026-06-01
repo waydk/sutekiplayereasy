@@ -4,6 +4,8 @@
  */
 
 export const KODIK_SKIP_SEEK = {
+  /** Шаг перемотки (клавиатура Shift+←/→, Plyr seekTime). */
+  seekStepSec: 5,
   /** Не уезжать за конец дорожки (сек). */
   edgeEpsilonSec: 0.05,
 } as const;
@@ -81,6 +83,13 @@ export function seekVideoToSec(video: HTMLVideoElement, t: number): void {
   }
 }
 
+/** Относительная перемотка на `deltaSec` (отрицательная — назад). */
+export function seekVideoByDelta(video: HTMLVideoElement, deltaSec: number): void {
+  const cur = video.currentTime;
+  if (!Number.isFinite(cur) || !Number.isFinite(deltaSec)) return;
+  seekVideoToSec(video, cur + deltaSec);
+}
+
 /** Автопропуск OP один раз за эпизод (если Kodik отдал таймкод и нет resume позже OP). */
 export function shouldAutoSkipOpening(
   markers: KodikSkipMarkers | null,
@@ -100,4 +109,20 @@ export function hasAnySkipMarker(m: KodikSkipMarkers | null): boolean {
     m.endingStartSec != null ||
     m.endingSkipToSec != null
   );
+}
+
+/** Есть таймкоды эндинга для кнопки «Следующая серия» в плеере. */
+export function hasEndingSkipMarkers(m: KodikSkipMarkers | null): boolean {
+  if (!m) return false;
+  return m.endingStartSec != null || m.endingSkipToSec != null;
+}
+
+/** Текущая позиция в сегменте эндинга (как для «Пропустить ED»). */
+export function isInEndingSegment(markers: KodikSkipMarkers | null, currentTimeSec: number): boolean {
+  if (!markers || !Number.isFinite(currentTimeSec)) return false;
+  const start = markers.endingStartSec;
+  if (start != null) return currentTimeSec >= start - 0.35;
+  const skipTo = markers.endingSkipToSec;
+  if (skipTo != null) return currentTimeSec >= Math.max(0, skipTo - 180);
+  return false;
 }

@@ -1,4 +1,5 @@
 import type Plyr from "plyr";
+import { KODIK_SKIP_SEEK } from "./kodikSkip";
 
 const PLYR_QUALITY_WHITELIST = [4320, 2880, 2160, 1440, 1080, 720, 576, 480, 360, 240] as const;
 
@@ -62,3 +63,6 @@ export const PLYR_QUALITY_CONFIG = {
   options: [...PLYR_QUALITY_WHITELIST],
   forced: true as const,
 };
+
+/** Шаг перемотки в Plyr (кнопки / стрелки при фокусе на плеере). */
+export const PLYR_SEEK_TIME_SEC = KODIK_SKIP_SEEK.seekStepSec;

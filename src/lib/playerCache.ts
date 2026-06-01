@@ -4,6 +4,7 @@ import { hubApiUrl, playerBootstrapUrl, type PlayerBootstrapResponse } from "./p
 
 export type KodikLinkResponse = {
   player_url?: string;
+  kodik_embed_url?: string | null;
   kodik_max_quality?: number | null;
   kodik_available_qualities?: number[] | null;
   hls_manifest_url?: string;

@@ -2618,6 +2618,15 @@ html.tg-webapp .sh-anime-load-bg {
   overflow: hidden;
 }
 
+.sh-video-wrap:focus {
+  outline: none;
+}
+
+.sh-video-wrap:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(124, 92, 255, 0.45);
+}
+
 .sh-current-episode-badge {
   position: absolute;
   z-index: 6;
@@ -6253,6 +6262,68 @@ html.tg-webapp .sh-anime-load-bg {
   opacity: 0;
   visibility: hidden;
   transform: translateY(-8px);
+}
+
+.pl-ending-next {
+  position: absolute;
+  z-index: 7;
+  left: 50%;
+  bottom: 4.75rem;
+  transform: translateX(-50%);
+  pointer-events: none;
+  max-width: min(100% - 24px, 360px);
+}
+
+.pl-ending-next__btn {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: linear-gradient(
+    145deg,
+    rgba(47, 140, 255, 0.92),
+    rgba(124, 92, 255, 0.88)
+  );
+  box-shadow:
+    0 6px 22px rgba(47, 140, 255, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.pl-ending-next__btn:hover {
+  filter: brightness(1.06);
+}
+
+.pl-ending-next__btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px rgba(124, 92, 255, 0.45),
+    0 6px 22px rgba(47, 140, 255, 0.35);
+}
+
+.sh-video-wrap:fullscreen .pl-ending-next,
+.sh-video-wrap:-webkit-full-screen .pl-ending-next {
+  bottom: 5.25rem;
+}
+
+.sh-video-wrap:fullscreen:has(.plyr.plyr--hide-controls) .pl-ending-next,
+.sh-video-wrap:-webkit-full-screen:has(.plyr.plyr--hide-controls) .pl-ending-next,
+.sh-video-wrap:has(.plyr:fullscreen.plyr--hide-controls) .pl-ending-next,
+.sh-video-wrap:has(.plyr:-webkit-full-screen.plyr--hide-controls) .pl-ending-next {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-50%) translateY(8px);
+  transition:
+    opacity 0.4s ease-in-out,
+    transform 0.4s ease-in-out,
+    visibility 0.4s ease-in-out;
 }
 
 .pl-autonext {

@@ -61,8 +61,11 @@ import {
 import {
   getPlayableEndSec,
   hasAnySkipMarker,
+  hasEndingSkipMarkers,
+  isInEndingSegment,
   KODIK_SKIP_SEEK,
   pickSkipMarkersFromKodikLink,
+  seekVideoByDelta,
   seekVideoToSec,
   shouldAutoSkipOpening,
   type KodikSkipMarkers,
@@ -73,7 +76,7 @@ import {
   warmMp4HeadWindow,
 } from "./lib/progressiveBuffer";
 import { hubApiUrl, playerBootstrapUrl, type PlayerBootstrapResponse } from "./lib/playerApi";
-import { PLYR_QUALITY_CONFIG, syncPlyrQualityMenu } from "./lib/plyrQualitySync";
+import { PLYR_QUALITY_CONFIG, PLYR_SEEK_TIME_SEC, syncPlyrQualityMenu } from "./lib/plyrQualitySync";
 import {
   PLAYER_WAIT_GIF_DEFAULT,
   WAIT_PHRASES_BUFFER,
@@ -538,6 +541,7 @@ export function KodikPlayer() {
   }, [busy, loadingBootstrap, needsPlayTap]);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoWrapRef = useRef<HTMLDivElement | null>(null);
   const episodeJumpHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const plyrRef = useRef<Plyr | null>(null);
   const switchQualityRef = useRef<(q: number) => void>(() => {});
@@ -784,6 +788,8 @@ export function KodikPlayer() {
       const mod = await import("plyr");
       if (cancelled || !videoRef.current || plyrRef.current) return;
       plyrRef.current = new mod.default(videoRef.current, {
+        seekTime: PLYR_SEEK_TIME_SEC,
+        keyboard: { focused: false, global: false },
         controls: [
           "play-large",
           "play",
@@ -2125,6 +2131,18 @@ export function KodikPlayer() {
     onPickEpisode(target);
   }, [canPrevEpisode, currentEpisodeIndex, navEpisodeNumbers, onPickEpisode]);
 
+  const togglePlayPause = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const plyr = plyrRef.current;
+    if (plyr) {
+      plyr.togglePlay();
+      return;
+    }
+    if (v.paused) void v.play().catch(() => setNeedsPlayTap(true));
+    else v.pause();
+  }, []);
+
   const goNextEpisode = useCallback(() => {
     if (!canNextEpisode) return;
     const target = navEpisodeNumbers[currentEpisodeIndex + 1];
@@ -2172,6 +2190,11 @@ export function KodikPlayer() {
     return () => v.removeEventListener("ended", onEnded);
   }, [canNextEpisode, animeId, translationId, episode]);
 
+  const showEndingNextEp = useMemo(() => {
+    if (!canNextEpisode || !hasEndingSkipMarkers(skipMarkers)) return false;
+    return isInEndingSegment(skipMarkers, playbackDebug.current);
+  }, [canNextEpisode, skipMarkers, playbackDebug.current]);
+
   useEffect(() => {
     if (autoNextCountdown === null) return;
     if (autoNextCountdown <= 0) {
@@ -2185,9 +2208,43 @@ export function KodikPlayer() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "ArrowRight" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
+      if (target?.isContentEditable) return;
+      const wrap = videoWrapRef.current;
+      const active = document.activeElement;
+      const playerFocused =
+        wrap != null &&
+        active instanceof Node &&
+        (wrap === active || wrap.contains(active));
+      if (e.code === "Space" || e.key === " ") {
+        if (!playerFocused || showShortcuts) return;
+        e.preventDefault();
+        togglePlayPause();
+        return;
+      }
+      if (
+        e.key === "ArrowRight" &&
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        const v = videoRef.current;
+        if (v) seekVideoByDelta(v, PLYR_SEEK_TIME_SEC);
+      } else if (
+        e.key === "ArrowLeft" &&
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        const v = videoRef.current;
+        if (v) seekVideoByDelta(v, -PLYR_SEEK_TIME_SEC);
+      } else if (e.key === "ArrowRight" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         goNextEpisode();
       } else if (e.key === "ArrowLeft" && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -2223,6 +2280,7 @@ export function KodikPlayer() {
     showShortcuts,
     skipEnding,
     skipOpening,
+    togglePlayPause,
     toggleTheater,
   ]);
 
@@ -2448,6 +2506,12 @@ export function KodikPlayer() {
           </div>
           <ul className="pl-shortcuts__list">
             <li><kbd>←</kbd><kbd>→</kbd> предыдущая / следующая серия</li>
+            <li>
+              <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> перемотка ±{PLYR_SEEK_TIME_SEC} с
+            </li>
+            <li>
+              <kbd>Space</kbd> пауза / воспроизведение (фокус на плеере)
+            </li>
             <li><kbd>O</kbd> пропустить опенинг</li>
             <li><kbd>E</kbd> пропустить эндинг</li>
             <li><kbd>T</kbd> режим кинотеатра</li>
@@ -2557,7 +2621,16 @@ export function KodikPlayer() {
 
         <section className="pl-stage">
           <div className="pl-video-pane sh-video-pane">
-            <div className="pl-video-wrap sh-video-wrap">
+            <div
+              className="pl-video-wrap sh-video-wrap"
+              ref={videoWrapRef}
+              tabIndex={-1}
+              onPointerDown={(e) => {
+                const t = e.target as HTMLElement;
+                if (t.closest("button, input, select, textarea, a, [role='menu'], [role='menuitem']")) return;
+                videoWrapRef.current?.focus({ preventScroll: true });
+              }}
+            >
               <div className="pl-fs-chrome" aria-hidden="false">
                 <div
                   className="pl-fs-chrome__badge sh-current-episode-badge"
@@ -2727,6 +2800,18 @@ export function KodikPlayer() {
                         </button>
                       </div>
                     </div>
+                  </div>
+                ) : null}
+                {showEndingNextEp && autoNextCountdown == null ? (
+                  <div className="pl-ending-next">
+                    <button
+                      type="button"
+                      className="pl-ending-next__btn"
+                      aria-label="Следующая серия"
+                      onClick={() => goNextEpisode()}
+                    >
+                      Следующая серия
+                    </button>
                   </div>
                 ) : null}
             </div>
