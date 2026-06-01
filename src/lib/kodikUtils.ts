@@ -254,10 +254,12 @@ export function availableQualities(maxQ: number | null | undefined): number[] {
   return opts.length ? opts : [360, 480, 720];
 }
 
-/** Качества из ответа Kodik API (probe на бэкенде) или fallback по kodik_max_quality. */
+/** Качества для UI — по kodik_max_quality из Kodik (до 720p), не только CDN probe. */
 export function qualitiesFromKodikLink(
   link: { kodik_available_qualities?: number[] | null; kodik_max_quality?: number | null } | null | undefined,
 ): number[] {
+  const fromKodik = availableQualities(link?.kodik_max_quality);
+  if (fromKodik.length) return fromKodik;
   const raw = link?.kodik_available_qualities;
   if (Array.isArray(raw) && raw.length) {
     const uniq = [...new Set(raw.map((q) => Number(q)).filter((q) => Number.isFinite(q) && q > 0))].sort(
@@ -265,7 +267,7 @@ export function qualitiesFromKodikLink(
     );
     if (uniq.length) return uniq;
   }
-  return availableQualities(link?.kodik_max_quality);
+  return [360, 480, 720];
 }
 
 export function inferQualityFromUrl(url: string): number | null {

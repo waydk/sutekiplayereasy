@@ -98,10 +98,13 @@ describe("quality utils", () => {
     expect(availableQualities(0)).toEqual([360, 480, 720]);
   });
 
-  it("qualitiesFromKodikLink prefers kodik_available_qualities from API", () => {
-    expect(qualitiesFromKodikLink({ kodik_available_qualities: [480, 720], kodik_max_quality: 720 })).toEqual([
-      480, 720,
-    ]);
+  it("qualitiesFromKodikLink prefers kodik_max_quality from Kodik API", () => {
+    expect(
+      qualitiesFromKodikLink({
+        kodik_available_qualities: [360, 480],
+        kodik_max_quality: 720,
+      }),
+    ).toEqual([360, 480, 720]);
     expect(qualitiesFromKodikLink({ kodik_max_quality: 480 })).toEqual([360, 480]);
     expect(qualitiesFromKodikLink(null)).toEqual([360, 480, 720]);
   });

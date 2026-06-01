@@ -95,13 +95,13 @@ export const TOP_ANIME_ALL_TIME: TopAnimeEntry[] = [
   },
   {
     rank: 9,
-    shikiId: 918,
-    title: "Гинтама",
-    titleJa: "銀魂",
-    year: 2006,
-    genres: "Комедия, Экшен",
-    episodesLabel: "367+ серий",
-    variant: "diagonal",
+    shikiId: 33,
+    title: "Берсерк",
+    titleJa: "ベルセルク",
+    year: 1997,
+    genres: "Сэйнэн, Экшен, Фэнтези",
+    episodesLabel: "25 серий",
+    variant: "dark",
   },
   {
     rank: 10,
@@ -221,7 +221,7 @@ export const RECOMMENDED_ANIME: TopAnimeEntry[] = TOP_ANIME_ALL_TIME.slice(0, 9)
   rank: index + 1,
 }));
 
-const ASSETS_CACHE_BUST = "20260525";
+const ASSETS_CACHE_BUST = "20260528";
 
 export function topAnimeHeroUrl(shikiId: number): string {
   return `/api/v1/assets/anime/${shikiId}/hero.jpg?v=${ASSETS_CACHE_BUST}`;

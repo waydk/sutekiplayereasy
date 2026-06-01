@@ -93,8 +93,13 @@ describe("listContinueWatching", () => {
   });
 
   it("skips first episode with little progress", () => {
-    writeLastWatch(10, { translationId: "1", episode: 1, positionSec: 10, updatedAt: 100 });
+    writeLastWatch(10, { translationId: "1", episode: 1, positionSec: 2, updatedAt: 100 });
     expect(listContinueWatching()).toEqual([]);
+  });
+
+  it("keeps first episode after a few seconds", () => {
+    writeLastWatch(10, { translationId: "1", episode: 1, positionSec: 12, updatedAt: 100 });
+    expect(listContinueWatching()).toHaveLength(1);
   });
 
   it("includes entries with enough progress", () => {

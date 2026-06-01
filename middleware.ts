@@ -25,6 +25,7 @@ const BACKEND_CANDIDATES = BACKEND_CANDIDATES_RAW.filter((b) => {
   return true;
 });
 const UPSTREAM_TIMEOUT_MS = 5_500;
+const UPSTREAM_POSTER_TIMEOUT_MS = 18_000;
 const UPSTREAM_ATTEMPTS_PER_BACKEND = 1;
 /** Короткий cooldown только для «битых» доменов; общий 25s загонял все origin в молчание. */
 const UPSTREAM_COOLDOWN_BAD_MS = 45_000;
@@ -67,6 +68,10 @@ export default async function middleware(request: Request): Promise<Response> {
   }
 
   const url = new URL(request.url);
+  const isPosterAsset =
+    url.pathname.startsWith("/api/v1/assets/anime/") &&
+    (url.pathname.endsWith("/poster.jpg") || url.pathname.endsWith("/hero.jpg"));
+  const upstreamTimeoutMs = isPosterAsset ? UPSTREAM_POSTER_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
   const init: RequestInit = {
     method: request.method,
     headers: forwardHeaders(request.headers),
@@ -86,7 +91,7 @@ export default async function middleware(request: Request): Promise<Response> {
     const target = `${backend}${url.pathname}${url.search}`;
     const attemptOnce = async (): Promise<Response | "fail"> => {
       const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const timeoutId = setTimeout(() => ctrl?.abort(), UPSTREAM_TIMEOUT_MS);
+      const timeoutId = setTimeout(() => ctrl?.abort(), upstreamTimeoutMs);
       try {
         const res = await fetch(target, { ...init, signal: ctrl?.signal });
         const vercelErr = (res.headers.get("x-vercel-error") || "").toLowerCase();
@@ -114,7 +119,7 @@ export default async function middleware(request: Request): Promise<Response> {
       } catch (e) {
         upstreamCooldownUntil.set(backend, Date.now() + UPSTREAM_COOLDOWN_SOFT_MS);
         if (e instanceof Error && e.name === "AbortError") {
-          lastErr = `timeout ${Math.round(UPSTREAM_TIMEOUT_MS / 1000)}s (${backend})`;
+          lastErr = `timeout ${Math.round(upstreamTimeoutMs / 1000)}s (${backend})`;
         } else {
           const msg = e instanceof Error ? e.message : "fetch failed";
           lastErr = `${msg} (${backend})`;

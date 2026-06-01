@@ -6,6 +6,8 @@ export type LastWatchRecord = {
   positionSec: number;
   updatedAt: number;
   title?: string;
+  /** Длительность серии (сек), если известна — нужна для процента прогресса. */
+  durationSec?: number;
 };
 
 export type ContinueWatchEntry = {
@@ -17,9 +19,14 @@ export type ContinueWatchEntry = {
   positionSec: number;
   updatedAt: number;
   progressLabel: string;
+  /** Доля просмотра серии 0..1 (0, если длительность неизвестна). */
+  progress: number;
+  /** Процент 0..100 или null, если длительность неизвестна. */
+  percent: number | null;
 };
 
-const MIN_CONTINUE_SEC = 30;
+/** Минимум секунд просмотра 1-й серии, чтобы тайтл попал в «Продолжить». */
+const MIN_CONTINUE_SEC = 5;
 
 const RESUME_PREFIX = "sh.resume:v1:";
 const LAST_PREFIX = "sh.last:v1:";
@@ -90,12 +97,14 @@ export function readLastWatch(animeId: number): LastWatchRecord | null {
     const updatedAt = Math.floor(Number(j.updatedAt) || 0);
     if (!translationId || episode < 1) return null;
     const title = typeof j.title === "string" ? j.title.trim() : "";
+    const durationSec = Math.floor(Number(j.durationSec) || 0);
     return {
       translationId,
       episode,
       positionSec: positionSec > 0 ? positionSec : 0,
       updatedAt: updatedAt > 0 ? updatedAt : Date.now(),
       title: title || undefined,
+      ...(durationSec > 0 ? { durationSec } : {}),
     };
   } catch {
     return null;
@@ -110,12 +119,14 @@ export function writeLastWatch(animeId: number, record: Omit<LastWatchRecord, "u
     if (!translationId) return;
     const positionSec = Math.max(0, Math.floor(Number(record.positionSec) || 0));
     const title = typeof record.title === "string" ? record.title.trim() : "";
+    const durationSec = Math.max(0, Math.floor(Number(record.durationSec) || 0));
     const payload: LastWatchRecord = {
       translationId,
       episode,
       positionSec,
       updatedAt: record.updatedAt ?? Date.now(),
       ...(title ? { title } : {}),
+      ...(durationSec > 0 ? { durationSec } : {}),
     };
     window.localStorage.setItem(lastKey(animeId), JSON.stringify(payload));
   } catch {
@@ -138,6 +149,11 @@ export function listContinueWatching(limit = 12): ContinueWatchEntry[] {
       if (!last) continue;
       if (last.positionSec < MIN_CONTINUE_SEC && last.episode <= 1) continue;
 
+      const dur = Number(last.durationSec) || 0;
+      const progress =
+        dur > 0 ? Math.max(0, Math.min(1, last.positionSec / dur)) : 0;
+      const percent = dur > 0 ? Math.round(progress * 100) : null;
+
       items.push({
         animeId,
         title: last.title || "",
@@ -146,6 +162,8 @@ export function listContinueWatching(limit = 12): ContinueWatchEntry[] {
         positionSec: last.positionSec,
         updatedAt: last.updatedAt,
         progressLabel: formatResumeHint(last.episode, last.positionSec),
+        progress,
+        percent,
       });
     }
   } catch {
@@ -181,8 +199,18 @@ export function flushWatchProgress(
   }
 
   const sec = Math.floor(pos);
+  const dur =
+    Number.isFinite(durationSec) && (durationSec as number) > 0
+      ? Math.floor(durationSec as number)
+      : undefined;
   writeResumeSec(animeId, tid, ep, sec);
-  writeLastWatch(animeId, { translationId: tid, episode: ep, positionSec: sec, title });
+  writeLastWatch(animeId, {
+    translationId: tid,
+    episode: ep,
+    positionSec: sec,
+    title,
+    ...(dur ? { durationSec: dur } : {}),
+  });
 }
 
 export type LaunchWatch = {
@@ -242,4 +270,26 @@ export function resolveLaunchWatch(
     savedResumeSec: resume,
     usedSavedEpisode: false,
   };
+}
+
+/** Прогресс по сериям для текущей озвучки (секунды на серию). */
+export function scanEpisodeProgress(animeId: number, translationId: string): Map<number, number> {
+  const out = new Map<number, number>();
+  if (typeof window === "undefined" || !animeId || !translationId.trim()) return out;
+  const prefix = `${RESUME_PREFIX}${animeId}:${translationId}:`;
+  try {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      const epRaw = key.slice(prefix.length);
+      const ep = Math.floor(Number(epRaw));
+      if (!Number.isFinite(ep) || ep < 1) continue;
+      const raw = window.localStorage.getItem(key);
+      const sec = Math.floor(Number(raw));
+      if (Number.isFinite(sec) && sec > 0) out.set(ep, sec);
+    }
+  } catch {
+    return out;
+  }
+  return out;
 }

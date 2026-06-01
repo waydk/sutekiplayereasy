@@ -1,4 +1,4 @@
-import { inferQualityFromUrl } from "./kodikUtils";
+import { inferQualityFromUrl, qualitiesFromKodikLink } from "./kodikUtils";
 import { isTelegramWebApp } from "../telegramWebApp";
 
 export type StartupNetworkHints = {
@@ -130,21 +130,23 @@ function isSlowStartupNet(net: StartupNetworkHints): boolean {
   );
 }
 
-/** Максимальное MP4-качество из ответа Kodik (kodik_max_quality + URL), без искусственного 480p. */
+/** Максимальное MP4-качество из ответа Kodik (kodik_available_qualities / URL). */
 export function pickKodikMp4Quality(
-  link: { kodik_max_quality?: number | null; player_url?: string } | null | undefined,
+  link: {
+    kodik_max_quality?: number | null;
+    kodik_available_qualities?: number[] | null;
+    player_url?: string;
+  } | null | undefined,
   net: StartupNetworkHints,
 ): number {
+  const available = qualitiesFromKodikLink(link);
+  const maxAvailable = available.length ? Math.max(...available) : 720;
   if (isSlowStartupNet(net)) {
-    const mq = Number(link?.kodik_max_quality) || 0;
-    return mq >= 360 ? 360 : 360;
+    return available[0] ?? 360;
   }
-  const fromUrl = inferQualityFromUrl(String(link?.player_url || ""));
   const mq = Number(link?.kodik_max_quality) || 0;
-  let q = fromUrl || mq || 720;
-  if (fromUrl) q = Math.max(q, fromUrl);
-  if (mq > 0) q = Math.max(q, mq);
-  return Math.min(720, Math.max(360, Math.floor(q)));
+  if (mq >= 720) return 720;
+  return maxAvailable;
 }
 
 /** @deprecated используйте pickKodikMp4Quality с объектом link */

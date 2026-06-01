@@ -240,7 +240,7 @@ function playVideoAsap(
     onFirstFrame?: () => void;
     onFirstPlay?: () => void;
   },
-  opts?: { tryMutedAutoplay?: boolean; unmuteAfterAutoplay?: boolean },
+  opts?: { tryMutedAutoplay?: boolean; unmuteAfterAutoplay?: boolean; stillPausedMs?: number },
 ) {
   if (typeof navigator !== "undefined" && /iPhone|iPad|iPod/i.test(navigator.userAgent)) {
     v.setAttribute("playsinline", "true");
@@ -248,6 +248,7 @@ function playVideoAsap(
   }
   let frameMarked = false;
   let playMarked = false;
+  const stillPausedMs = opts?.stillPausedMs ?? 1200;
   const markFrame = () => {
     if (frameMarked) return;
     frameMarked = true;
@@ -296,6 +297,10 @@ function playVideoAsap(
       return;
     }
     runPlay();
+    window.setTimeout(() => {
+      if (playMarked || !v.paused || v.error || v.readyState < 2) return;
+      hooks?.onAutoplayBlocked?.();
+    }, stillPausedMs);
   };
   v.addEventListener(
     "playing",
@@ -1168,7 +1173,7 @@ export function KodikPlayer() {
         };
         v.addEventListener("canplay", onCanPlay, { once: true });
         const playOpts = {
-          tryMutedAutoplay: shouldAutoplayMuted(),
+          tryMutedAutoplay: true,
           unmuteAfterAutoplay: true,
         };
 
@@ -1665,6 +1670,7 @@ export function KodikPlayer() {
   );
 
   const switchQuality = useCallback(async function switchQuality(nextQ: number) {
+      const v = videoRef.current;
       if (hlsMode) {
         const hls = hlsRef.current;
         const pick = hlsQualityPickRef.current;
@@ -1676,8 +1682,11 @@ export function KodikPlayer() {
           return;
         }
         destroyHls();
+        if (v) {
+          v.removeAttribute("src");
+          v.load();
+        }
       }
-      const v = videoRef.current;
       if (!v) return;
       const raw = String(rawMp4 || "").trim();
       if (!raw) return;
@@ -2393,9 +2402,10 @@ export function KodikPlayer() {
               ←
             </button>
           ) : null}
-          <span className="pl-brand" aria-hidden>
-            SUTEKI<span>hub</span>
-          </span>
+          <div className="sh-search-brand sh-brand sh-brand--compact pl-topbar__brand" aria-label="Suteki Hub">
+            <span className="sh-brand-suteki">SUTEKI</span>
+            <span className="sh-brand-hub">hub</span>
+          </div>
         </div>
         {animeTitle ? (
           <h1 className="pl-topbar__title" title={animeTitle}>

@@ -74,10 +74,10 @@
 
           /* Главная: постеры и календарь до загрузки React-бандла */
           if (!id || id <= 0) {
-            var homeIds = [5114, 9253, 16498, 11061, 1535, 30276, 2904, 1, 918];
+            var homeIds = [5114, 9253, 16498, 11061, 1535, 30276, 2904, 1, 33];
             homeIds.forEach(function (sid) {
               try {
-                var pu = origin + "/api/v1/assets/anime/" + sid + "/poster.jpg?v=20260525";
+                var pu = origin + "/api/v1/assets/anime/" + sid + "/poster.jpg?v=20260528";
                 var plp = document.createElement("link");
                 plp.rel = "preload";
                 plp.as = "image";
