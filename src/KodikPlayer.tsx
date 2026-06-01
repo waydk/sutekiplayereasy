@@ -2558,8 +2558,21 @@ export function KodikPlayer() {
         <section className="pl-stage">
           <div className="pl-video-pane sh-video-pane">
             <div className="pl-video-wrap sh-video-wrap">
-              <div className="pl-ep-live" aria-live="polite">
-                EP {Math.max(1, Math.floor(Number(episode) || 1))}
+              <div className="pl-fs-chrome" aria-hidden="false">
+                <div
+                  className="pl-fs-chrome__badge sh-current-episode-badge"
+                  aria-live="polite"
+                  aria-label={`${Math.max(1, Math.floor(Number(episode) || 1))} серия`}
+                >
+                  <span className="pl-fs-chrome__ep-num">
+                    {Math.max(1, Math.floor(Number(episode) || 1))}
+                  </span>
+                  <span className="pl-fs-chrome__ep-label">серия</span>
+                </div>
+                <div className="pl-fs-chrome__brand sh-brand sh-brand--compact" aria-label="Suteki Hub">
+                  <span className="sh-brand-suteki">SUTEKI</span>
+                  <span className="sh-brand-hub">hub</span>
+                </div>
               </div>
               <video
                 ref={videoRef}

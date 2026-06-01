@@ -6166,20 +6166,93 @@ html.tg-webapp .sh-anime-load-bg {
   border-radius: 0;
 }
 
-.pl-ep-live {
+/* Fullscreen / windowed overlay: episode badge + brand (brand in FS only) */
+.pl-fs-chrome {
   position: absolute;
   z-index: 6;
   top: 14px;
   left: 14px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 0.75rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  color: #fff;
-  background: linear-gradient(135deg, rgba(47, 140, 255, 0.85), rgba(124, 92, 255, 0.75));
-  box-shadow: 0 4px 16px rgba(47, 140, 255, 0.35);
+  right: 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   pointer-events: none;
+}
+
+.pl-fs-chrome__badge {
+  position: static;
+  top: auto;
+  left: auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  min-height: 32px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: linear-gradient(
+    145deg,
+    rgba(47, 140, 255, 0.42),
+    rgba(124, 92, 255, 0.32)
+  );
+  box-shadow:
+    0 4px 18px rgba(47, 140, 255, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  color: rgba(255, 255, 255, 0.96);
+  font-size: clamp(0.75rem, 0.7rem + 0.35vw, 0.8125rem);
+  font-weight: 750;
+  line-height: 1.15;
+  letter-spacing: 0.01em;
+}
+
+.pl-fs-chrome__ep-num {
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.pl-fs-chrome__ep-label {
+  font-weight: 650;
+  font-size: 0.92em;
+  color: rgba(255, 255, 255, 0.88);
+  letter-spacing: 0.02em;
+}
+
+.pl-fs-chrome__brand {
+  display: none;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.sh-video-wrap:fullscreen .pl-fs-chrome__brand,
+.sh-video-wrap:-webkit-full-screen .pl-fs-chrome__brand {
+  display: inline-flex;
+}
+
+/* Same idle timing as Plyr controls (plyr--hide-controls, 0.4s) */
+.sh-video-wrap:fullscreen .pl-fs-chrome,
+.sh-video-wrap:-webkit-full-screen .pl-fs-chrome {
+  transition:
+    opacity 0.4s ease-in-out,
+    transform 0.4s ease-in-out,
+    visibility 0.4s ease-in-out;
+}
+
+.sh-video-wrap:fullscreen:has(.plyr.plyr--hide-controls) .pl-fs-chrome,
+.sh-video-wrap:-webkit-full-screen:has(.plyr.plyr--hide-controls) .pl-fs-chrome,
+.sh-video-wrap:has(.plyr:fullscreen.plyr--hide-controls) .pl-fs-chrome,
+.sh-video-wrap:has(.plyr:-webkit-full-screen.plyr--hide-controls) .pl-fs-chrome {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
 }
 
 .pl-autonext {
