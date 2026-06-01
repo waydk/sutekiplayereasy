@@ -61,6 +61,19 @@ function forwardHeaders(incoming: Headers): Headers {
   return out;
 }
 
+/** FastAPI 502/503 с JSON detail (Shikimori/Kodik) — не инфра-сбой, отдаём клиенту как есть. */
+async function isUpstreamAppError(res: Response): Promise<boolean> {
+  if (res.status !== 502 && res.status !== 503 && res.status !== 504) return false;
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  if (!ct.includes("application/json")) return false;
+  try {
+    const j = JSON.parse(await res.clone().text()) as { detail?: unknown };
+    return typeof j.detail === "string" && j.detail.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export default async function middleware(request: Request): Promise<Response> {
   const origin = request.headers.get("origin");
   if (request.method === "OPTIONS") {
@@ -101,10 +114,15 @@ export default async function middleware(request: Request): Promise<Response> {
           const textHint = (await res.clone().text().catch(() => "")).toLowerCase();
           isDirectIpBlocked = textHint.includes("direct ip access is not allowed");
         }
-        /* 503 от VPS — это «Kodik unavailable for this title», legitimate ответ, не infra-сбой.
-           Только 502/504 (gateway), deployment_not_found и direct_ip_blocked считаем retryable. */
-        const isGatewayFailure = res.status === 502 || res.status === 504;
+        /* 502/503/504 с JSON detail — ответ API (Shikimori/Kodik), не ретраим.
+           Пустой 502/504 от nginx — infra, пробуем другой backend. */
+        const appError = await isUpstreamAppError(res);
+        const isGatewayFailure = (res.status === 502 || res.status === 504) && !appError;
         const isRetryableStatus = isGatewayFailure || isDirectIpBlocked || isDeploymentMissing;
+        if (appError) {
+          upstreamCooldownUntil.delete(backend);
+          return res;
+        }
         if (isRetryableStatus) {
           const bad = isDeploymentMissing || isDirectIpBlocked;
           upstreamCooldownUntil.set(
