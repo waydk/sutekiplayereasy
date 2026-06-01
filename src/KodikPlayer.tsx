@@ -107,6 +107,18 @@ import {
   type AnimeSearchRow,
 } from "./lib/animeSearch";
 
+/** Не перехватывать клавиши плеера из полей ввода и кнопок вне области видео. */
+function shouldHandlePlayerKeys(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return true;
+  if (target.isContentEditable) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return false;
+  if (tag === "BUTTON") {
+    return Boolean(target.closest(".sh-video-wrap, .pl-video-wrap"));
+  }
+  return true;
+}
+
 type WatchPayload = {
   player_url?: string;
   translations?: TranslationRow[];
@@ -2135,12 +2147,14 @@ export function KodikPlayer() {
     const v = videoRef.current;
     if (!v) return;
     const plyr = plyrRef.current;
-    if (plyr) {
-      plyr.togglePlay();
-      return;
+    if (v.paused || v.ended) {
+      if (plyr) void plyr.play();
+      else void v.play().catch(() => setNeedsPlayTap(true));
+    } else if (plyr) {
+      plyr.pause();
+    } else {
+      v.pause();
     }
-    if (v.paused) void v.play().catch(() => setNeedsPlayTap(true));
-    else v.pause();
   }, []);
 
   const goNextEpisode = useCallback(() => {
@@ -2193,7 +2207,7 @@ export function KodikPlayer() {
   const showEndingNextEp = useMemo(() => {
     if (!canNextEpisode || !hasEndingSkipMarkers(skipMarkers)) return false;
     return isInEndingSegment(skipMarkers, playbackDebug.current);
-  }, [canNextEpisode, skipMarkers, playbackDebug.current]);
+  }, [canNextEpisode, skipMarkers, playbackDebug]);
 
   useEffect(() => {
     if (autoNextCountdown === null) return;
@@ -2208,18 +2222,9 @@ export function KodikPlayer() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
-      if (target?.isContentEditable) return;
-      const wrap = videoWrapRef.current;
-      const active = document.activeElement;
-      const playerFocused =
-        wrap != null &&
-        active instanceof Node &&
-        (wrap === active || wrap.contains(active));
+      if (!shouldHandlePlayerKeys(e.target)) return;
       if (e.code === "Space" || e.key === " ") {
-        if (!playerFocused || showShortcuts) return;
+        if (showShortcuts || e.repeat) return;
         e.preventDefault();
         togglePlayPause();
         return;
@@ -2244,10 +2249,10 @@ export function KodikPlayer() {
         e.preventDefault();
         const v = videoRef.current;
         if (v) seekVideoByDelta(v, -PLYR_SEEK_TIME_SEC);
-      } else if (e.key === "ArrowRight" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if (e.key === "ArrowRight" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         goNextEpisode();
-      } else if (e.key === "ArrowLeft" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if (e.key === "ArrowLeft" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         goPrevEpisode();
       } else if (e.key === "o" || e.key === "O") {
@@ -2510,7 +2515,7 @@ export function KodikPlayer() {
               <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> перемотка ±{PLYR_SEEK_TIME_SEC} с
             </li>
             <li>
-              <kbd>Space</kbd> пауза / воспроизведение (фокус на плеере)
+              <kbd>Space</kbd> пауза / воспроизведение
             </li>
             <li><kbd>O</kbd> пропустить опенинг</li>
             <li><kbd>E</kbd> пропустить эндинг</li>
