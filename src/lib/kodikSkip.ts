@@ -52,25 +52,51 @@ export function pickSkipMarkersFromKodikLink(out: unknown): KodikSkipMarkers {
   return { openingEndSec, endingStartSec, endingSkipToSec };
 }
 
-/** Конец воспроизводимого интервала (duration или seekable), иначе null. */
-export function getPlayableEndSec(video: HTMLVideoElement): number | null {
-  const d = video.duration;
-  if (Number.isFinite(d) && d > 0 && !Number.isNaN(d)) return d;
+/** Диапазон, в который браузер реально разрешает seek (HLS часто растёт по мере буфера). */
+export function getSeekableRange(video: HTMLVideoElement): { start: number; end: number } | null {
   try {
     const sb = video.seekable;
-    if (sb && sb.length > 0) {
-      const end = sb.end(sb.length - 1);
-      if (Number.isFinite(end) && end > 0) return end;
-    }
+    if (!sb || sb.length === 0) return null;
+    const start = sb.start(0);
+    const end = sb.end(sb.length - 1);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+    return { start: Math.max(0, start), end };
   } catch {
-    /* */
+    return null;
   }
-  return null;
+}
+
+function isUsableMediaDuration(d: number): boolean {
+  return Number.isFinite(d) && d > 0 && !Number.isNaN(d) && d < 2 ** 32 && d !== Number.POSITIVE_INFINITY;
+}
+
+/** Начало допустимой перемотки (обычно 0; для HLS — seekable.start). */
+export function getPlayableStartSec(video: HTMLVideoElement): number {
+  return getSeekableRange(video)?.start ?? 0;
+}
+
+/** Конец воспроизводимого интервала (min(duration, seekable.end)), иначе null. */
+export function getPlayableEndSec(video: HTMLVideoElement): number | null {
+  const range = getSeekableRange(video);
+  const d = video.duration;
+  const durEnd = isUsableMediaDuration(d) ? d : null;
+  if (range && durEnd != null) return Math.min(range.end, durEnd);
+  if (range) return range.end;
+  return durEnd;
+}
+
+/** Длительность для UI (Plyr): реальный конец таймлайна, не меньше текущей позиции. */
+export function resolveMediaDurationSec(video: HTMLVideoElement): number | null {
+  const end = getPlayableEndSec(video);
+  if (end == null) return null;
+  const cur = video.currentTime;
+  const duration = Number.isFinite(cur) && cur > end ? cur : end;
+  return duration > 0.05 ? duration : null;
 }
 
 export function clampSeekSec(video: HTMLVideoElement, t: number, epsilon = KODIK_SKIP_SEEK.edgeEpsilonSec): number {
+  const lo = getPlayableStartSec(video);
   const end = getPlayableEndSec(video);
-  const lo = 0;
   const hi = end != null ? Math.max(lo, end - epsilon) : t;
   return Math.max(lo, Math.min(t, hi));
 }

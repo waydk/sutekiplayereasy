@@ -76,7 +76,12 @@ import {
   warmMp4HeadWindow,
 } from "./lib/progressiveBuffer";
 import { hubApiUrl, playerBootstrapUrl, type PlayerBootstrapResponse } from "./lib/playerApi";
-import { PLYR_QUALITY_CONFIG, PLYR_SEEK_TIME_SEC, syncPlyrQualityMenu } from "./lib/plyrQualitySync";
+import {
+  PLYR_QUALITY_CONFIG,
+  PLYR_SEEK_TIME_SEC,
+  syncPlyrQualityMenu,
+  syncPlyrTimeline,
+} from "./lib/plyrQualitySync";
 import {
   PLAYER_WAIT_GIF_DEFAULT,
   WAIT_PHRASES_BUFFER,
@@ -276,14 +281,7 @@ function playVideoAsap(
   };
   const applyResume = () => {
     if (resumeSec == null || resumeSec <= 0.25) return;
-    try {
-      const d = v.duration;
-      const target =
-        Number.isFinite(d) && d > 0 ? Math.min(resumeSec, Math.max(0, d - 0.25)) : resumeSec;
-      if (target > 0.25) v.currentTime = target;
-    } catch {
-      /* */
-    }
+    seekVideoToSec(v, resumeSec);
   };
   const start = () => {
     applyResume();
@@ -799,7 +797,7 @@ export function KodikPlayer() {
       await import("plyr/dist/plyr.css");
       const mod = await import("plyr");
       if (cancelled || !videoRef.current || plyrRef.current) return;
-      plyrRef.current = new mod.default(videoRef.current, {
+      const plyr = new mod.default(videoRef.current, {
         seekTime: PLYR_SEEK_TIME_SEC,
         keyboard: { focused: false, global: false },
         controls: [
@@ -821,6 +819,8 @@ export function KodikPlayer() {
         speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
         fullscreen: { enabled: true, fallback: true, iosNative: true, container: ".sh-video-wrap" },
       });
+      plyrRef.current = plyr;
+      syncPlyrTimeline(plyr, videoRef.current);
     };
     const deferPlyr = inTelegram || isMobileStartup();
     if (!deferPlyr) {
@@ -1726,11 +1726,7 @@ export function KodikPlayer() {
 
       const onReady = async () => {
         v.removeEventListener("canplay", onReady);
-        try {
-          if (Number.isFinite(t) && t > 0) v.currentTime = t;
-        } catch {
-          /* */
-        }
+        if (Number.isFinite(t) && t > 0.25) seekVideoToSec(v, t);
         if (!wasPaused) {
           try {
             await v.play();
@@ -1923,6 +1919,7 @@ export function KodikPlayer() {
   const onVideoTimelineRefreshed = useCallback(() => {
     const v = videoRef.current;
     setPlayableEndKnown(Boolean(v && getPlayableEndSec(v) != null));
+    syncPlyrTimeline(plyrRef.current, v);
   }, []);
 
   const skipUi = useMemo(() => {
@@ -2231,28 +2228,34 @@ export function KodikPlayer() {
       }
       if (
         e.key === "ArrowRight" &&
-        e.shiftKey &&
+        !e.shiftKey &&
         !e.metaKey &&
         !e.ctrlKey &&
         !e.altKey
       ) {
         e.preventDefault();
         const v = videoRef.current;
-        if (v) seekVideoByDelta(v, PLYR_SEEK_TIME_SEC);
+        if (v) {
+          seekVideoByDelta(v, PLYR_SEEK_TIME_SEC);
+          syncPlyrTimeline(plyrRef.current, v);
+        }
       } else if (
         e.key === "ArrowLeft" &&
-        e.shiftKey &&
+        !e.shiftKey &&
         !e.metaKey &&
         !e.ctrlKey &&
         !e.altKey
       ) {
         e.preventDefault();
         const v = videoRef.current;
-        if (v) seekVideoByDelta(v, -PLYR_SEEK_TIME_SEC);
-      } else if (e.key === "ArrowRight" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (v) {
+          seekVideoByDelta(v, -PLYR_SEEK_TIME_SEC);
+          syncPlyrTimeline(plyrRef.current, v);
+        }
+      } else if (e.key === "ArrowRight" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         goNextEpisode();
-      } else if (e.key === "ArrowLeft" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      } else if (e.key === "ArrowLeft" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         goPrevEpisode();
       } else if (e.key === "o" || e.key === "O") {
@@ -2510,9 +2513,9 @@ export function KodikPlayer() {
             </button>
           </div>
           <ul className="pl-shortcuts__list">
-            <li><kbd>←</kbd><kbd>→</kbd> предыдущая / следующая серия</li>
+            <li><kbd>←</kbd><kbd>→</kbd> перемотка ±{PLYR_SEEK_TIME_SEC} с</li>
             <li>
-              <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> перемотка ±{PLYR_SEEK_TIME_SEC} с
+              <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> предыдущая / следующая серия
             </li>
             <li>
               <kbd>Space</kbd> пауза / воспроизведение
@@ -2665,6 +2668,7 @@ export function KodikPlayer() {
                 onCanPlay={() => setBuffering(false)}
                 onLoadedMetadata={onVideoTimelineRefreshed}
                 onDurationChange={onVideoTimelineRefreshed}
+                onProgress={onVideoTimelineRefreshed}
               />
                 {showVideoBufferHint ? (
                   <div className="sh-video-buffer-hint" role="status" aria-live="polite">

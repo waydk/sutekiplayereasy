@@ -1,5 +1,5 @@
 import type Plyr from "plyr";
-import { KODIK_SKIP_SEEK } from "./kodikSkip";
+import { KODIK_SKIP_SEEK, resolveMediaDurationSec } from "./kodikSkip";
 
 const PLYR_QUALITY_WHITELIST = [4320, 2880, 2160, 1440, 1080, 720, 576, 480, 360, 240] as const;
 
@@ -66,3 +66,38 @@ export const PLYR_QUALITY_CONFIG = {
 
 /** Шаг перемотки в Plyr (кнопки / стрелки при фокусе на плеере). */
 export const PLYR_SEEK_TIME_SEC = KODIK_SKIP_SEEK.seekStepSec;
+
+type PlyrWithDurationConfig = Plyr & {
+  config: { duration?: number };
+};
+
+/**
+ * Plyr не умеет seek при duration === Infinity (типичный HLS до полного манифеста).
+ * Подставляем длительность из seekable (не меньше currentTime — иначе Plyr откатывает назад).
+ */
+export function syncPlyrTimeline(player: Plyr | null, video: HTMLVideoElement | null): void {
+  if (!player || !video) return;
+  const p = player as PlyrWithDurationConfig;
+  const raw = video.duration;
+  const needsFaux =
+    !Number.isFinite(raw) ||
+    raw <= 0 ||
+    raw === Number.POSITIVE_INFINITY ||
+    raw >= 2 ** 32 ||
+    Number.isNaN(raw);
+
+  if (needsFaux) {
+    const timelineEnd = resolveMediaDurationSec(video);
+    if (timelineEnd == null) return;
+    const rounded = Math.round(timelineEnd * 100) / 100;
+    if (p.config.duration === rounded) return;
+    p.config.duration = rounded;
+    video.dispatchEvent(new Event("durationchange"));
+    return;
+  }
+
+  if (p.config.duration != null) {
+    delete p.config.duration;
+    video.dispatchEvent(new Event("durationchange"));
+  }
+}
