@@ -5946,6 +5946,14 @@ html.tg-webapp .sh-anime-load-bg {
   display: none;
 }
 
+.pl-page--cinema .pl-topbar {
+  display: none;
+}
+
+.pl-page--cinema .pl-shell {
+  padding-top: 0;
+}
+
 .pl-backdrop {
   position: fixed;
   inset: 0;

@@ -104,6 +104,7 @@ import {
   writeAutoSkipOpPref,
   writeTheaterPref,
 } from "./lib/playerPrefs";
+import { isCinemaLaunch } from "./lib/cinemaMode";
 import { heroAssetUrl, posterAssetUrl } from "./lib/posterPreload";
 import {
   normalizeSearchQuery,
@@ -376,6 +377,10 @@ export function KodikPlayer() {
   const showDebug = shouldShowDebugPanel();
   const showStartupTrace = shouldShowStartupTrace();
   const inTelegram = isTelegramWebApp();
+  const cinemaMode = useMemo(
+    () => isCinemaLaunch(searchParams, inTelegram),
+    [searchParams, inTelegram],
+  );
   const [tgLaunchId, setTgLaunchId] = useState<number | null>(() => parseLaunchShikiId());
 
   useEffect(() => {
@@ -463,7 +468,12 @@ export function KodikPlayer() {
   const [awaitingFirstFrame, setAwaitingFirstFrame] = useState(false);
   const [resumeHintSec, setResumeHintSec] = useState<number | null>(null);
   const [resumeHintEpisode, setResumeHintEpisode] = useState<number | null>(null);
-  const [theaterMode, setTheaterMode] = useState(() => readTheaterPref());
+  const [theaterMode, setTheaterMode] = useState(() =>
+    typeof window !== "undefined" &&
+    isCinemaLaunch(new URLSearchParams(window.location.search), isTelegramWebApp())
+      ? true
+      : readTheaterPref(),
+  );
   const [autoSkipOp, setAutoSkipOp] = useState(() => readAutoSkipOpPref());
   const [autoNextEp, setAutoNextEp] = useState(() => readAutoNextPref());
   const [playerTab, setPlayerTab] = useState<"tr" | "ep" | "chrono">("ep");
@@ -500,14 +510,22 @@ export function KodikPlayer() {
   }, [autoNextEp]);
 
   useEffect(() => {
-    writeTheaterPref(theaterMode);
+    if (cinemaMode) setTheaterMode(true);
+  }, [cinemaMode]);
+
+  useEffect(() => {
+    if (!cinemaMode) writeTheaterPref(theaterMode);
     if (typeof document !== "undefined") {
-      document.body.classList.toggle("pl-theater", theaterMode);
+      document.body.classList.toggle("pl-theater", theaterMode || cinemaMode);
+      document.body.classList.toggle("pl-cinema", cinemaMode);
     }
     return () => {
-      if (typeof document !== "undefined") document.body.classList.remove("pl-theater");
+      if (typeof document !== "undefined") {
+        document.body.classList.remove("pl-theater");
+        document.body.classList.remove("pl-cinema");
+      }
     };
-  }, [theaterMode]);
+  }, [theaterMode, cinemaMode]);
 
   useEffect(() => {
     if (linkCopied) {
@@ -554,6 +572,7 @@ export function KodikPlayer() {
   const videoWrapRef = useRef<HTMLDivElement | null>(null);
   const episodeJumpHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const plyrRef = useRef<Plyr | null>(null);
+  const autoFullscreenDoneRef = useRef(false);
   const switchQualityRef = useRef<(q: number) => void>(() => {});
   const hlsRef = useRef<Hls | null>(null);
   const hlsImportRef = useRef<Promise<typeof import("hls.js")> | null>(null);
@@ -2171,9 +2190,35 @@ export function KodikPlayer() {
   }, []);
 
   const toggleTheater = useCallback(() => {
+    if (cinemaMode) return;
     setTheaterMode((v) => !v);
     tgHaptic("light");
-  }, []);
+  }, [cinemaMode]);
+
+  const tryAutoFullscreen = useCallback(() => {
+    if (!cinemaMode || autoFullscreenDoneRef.current) return;
+    autoFullscreenDoneRef.current = true;
+    const plyr = plyrRef.current;
+    if (plyr && !plyr.fullscreen.active) {
+      void plyr.fullscreen.enter();
+      return;
+    }
+    const el = document.querySelector(".sh-video-wrap") as HTMLElement | null;
+    if (el?.requestFullscreen) {
+      void el.requestFullscreen().catch(() => {
+        autoFullscreenDoneRef.current = false;
+      });
+    }
+  }, [cinemaMode]);
+
+  useEffect(() => {
+    if (!cinemaMode) return;
+    const v = videoRef.current;
+    if (!v) return;
+    const onPlaying = () => tryAutoFullscreen();
+    v.addEventListener("playing", onPlaying);
+    return () => v.removeEventListener("playing", onPlaying);
+  }, [cinemaMode, tryAutoFullscreen, animeId]);
 
   const requestPiP = useCallback(() => {
     const v = videoRef.current;
@@ -2452,7 +2497,7 @@ export function KodikPlayer() {
 
   return (
     <main
-      className={`sh-page pl-page${theaterMode ? " pl-page--theater" : ""}`}
+      className={`sh-page pl-page${theaterMode || cinemaMode ? " pl-page--theater" : ""}${cinemaMode ? " pl-page--cinema" : ""}`}
       aria-busy={busy || loadingBootstrap || loadingSearch}
     >
       {animeId ? (
@@ -2481,26 +2526,30 @@ export function KodikPlayer() {
           <span className="pl-topbar__title pl-topbar__title--ph">Выберите аниме</span>
         )}
         <div className="pl-topbar__actions">
-          <button
-            type="button"
-            className={`pl-icon-btn${searchExpanded ? " pl-icon-btn--active" : ""}`}
-            onClick={() => setSearchExpanded((v) => !v)}
-            aria-expanded={searchExpanded}
-            title="Поиск"
-          >
-            ⌕
-          </button>
-          <button
-            type="button"
-            className={`pl-icon-btn${theaterMode ? " pl-icon-btn--active" : ""}`}
-            onClick={toggleTheater}
-            title="Кинотеатр (T)"
-          >
-            ⛶
-          </button>
-          <button type="button" className="pl-icon-btn" onClick={() => setShowShortcuts((v) => !v)} title="Горячие клавиши (?)">
-            ?
-          </button>
+          {!cinemaMode ? (
+            <>
+              <button
+                type="button"
+                className={`pl-icon-btn${searchExpanded ? " pl-icon-btn--active" : ""}`}
+                onClick={() => setSearchExpanded((v) => !v)}
+                aria-expanded={searchExpanded}
+                title="Поиск"
+              >
+                ⌕
+              </button>
+              <button
+                type="button"
+                className={`pl-icon-btn${theaterMode ? " pl-icon-btn--active" : ""}`}
+                onClick={toggleTheater}
+                title="Кинотеатр (T)"
+              >
+                ⛶
+              </button>
+              <button type="button" className="pl-icon-btn" onClick={() => setShowShortcuts((v) => !v)} title="Горячие клавиши (?)">
+                ?
+              </button>
+            </>
+          ) : null}
         </div>
       </header>
 
@@ -2782,7 +2831,7 @@ export function KodikPlayer() {
                       const v = videoRef.current;
                       if (v) {
                         v.muted = false;
-                        void v.play().catch(() => setNeedsPlayTap(true));
+                        void v.play().then(() => tryAutoFullscreen()).catch(() => setNeedsPlayTap(true));
                       } else {
                         void playSelected();
                       }
@@ -2826,6 +2875,8 @@ export function KodikPlayer() {
             </div>
           </div>
 
+          {!cinemaMode ? (
+          <>
           <div className="pl-now">
             <div className="pl-now__info">
               {animeId ? (
@@ -3000,6 +3051,8 @@ export function KodikPlayer() {
               <p className="pl-toolbar__hint">В Safari качество выбирает система</p>
             ) : null}
           </div>
+          </>
+          ) : null}
 
           {geoBlocked ? (
             <p className="sh-viewer-alert" role="alert">
@@ -3018,7 +3071,7 @@ export function KodikPlayer() {
           ) : null}
         </section>
 
-        {!theaterMode ? (
+        {!theaterMode && !cinemaMode ? (
           <section className="pl-panel">
             <div className="pl-tabs" role="tablist">
               <button
