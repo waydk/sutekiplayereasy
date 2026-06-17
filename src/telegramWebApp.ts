@@ -37,6 +37,7 @@ declare global {
           notificationOccurred?: (type: "error" | "success" | "warning") => void;
           selectionChanged?: () => void;
         };
+        sendData?: (data: string) => void;
       };
     };
   }

@@ -400,9 +400,14 @@ export function KodikPlayer() {
     (qpAnime && !Number.isNaN(Number(qpAnime)) && Number(qpAnime) > 0 ? Math.floor(Number(qpAnime)) : null);
   const qpTid = searchParams.get("translation_id");
   const qpEp = searchParams.get("episode");
+  const qpResume = searchParams.get("resume_sec");
   const hasExplicitEpisodeInUrl = searchParams.has("episode");
   const parsedEp =
     qpEp && !Number.isNaN(Number(qpEp)) && Number(qpEp) > 0 ? Math.floor(Number(qpEp)) : 1;
+  const parsedResumeSec =
+    qpResume && !Number.isNaN(Number(qpResume)) && Number(qpResume) > 0
+      ? Math.floor(Number(qpResume))
+      : null;
   const launchWatch = useMemo(
     () =>
       parsedAnimeId
@@ -410,9 +415,10 @@ export function KodikPlayer() {
             explicitEpisode: hasExplicitEpisodeInUrl,
             urlEpisode: parsedEp,
             urlTranslationId: qpTid ? String(qpTid) : null,
+            urlResumeSec: parsedResumeSec,
           })
         : null,
-    [parsedAnimeId, hasExplicitEpisodeInUrl, parsedEp, qpTid],
+    [parsedAnimeId, hasExplicitEpisodeInUrl, parsedEp, qpTid, parsedResumeSec],
   );
 
   const defaultQ = searchParams.get("q") || "";

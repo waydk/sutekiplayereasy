@@ -1,5 +1,7 @@
 /** Прогресс просмотра: позиция в серии + последняя серия/озвучка (localStorage). */
 
+import { isTelegramWebApp } from "../telegramWebApp";
+
 export type LastWatchRecord = {
   translationId: string;
   episode: number;
@@ -172,6 +174,28 @@ export function listContinueWatching(limit = 12): ContinueWatchEntry[] {
   return items.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
 }
 
+export function syncWatchProgressToBot(
+  animeId: number,
+  translationId: string,
+  episode: number,
+  positionSec: number,
+): void {
+  if (typeof window === "undefined" || !isTelegramWebApp()) return;
+  const tg = window.Telegram?.WebApp;
+  if (!tg?.sendData) return;
+  const tid = String(translationId || "").trim();
+  const ep = Math.max(1, Math.floor(episode) || 1);
+  const pos = Math.max(0, Math.floor(positionSec) || 0);
+  if (!animeId || !tid) return;
+  try {
+    const payload = JSON.stringify({ a: animeId, t: tid, e: ep, p: pos });
+    if (payload.length > 4096) return;
+    tg.sendData(payload);
+  } catch {
+    /* */
+  }
+}
+
 export function flushWatchProgress(
   animeId: number,
   translationId: string,
@@ -189,12 +213,14 @@ export function flushWatchProgress(
     pos = 0;
     writeResumeSec(animeId, tid, ep, 0);
     writeLastWatch(animeId, { translationId: tid, episode: ep + 1, positionSec: 0, title });
+    syncWatchProgressToBot(animeId, tid, ep + 1, 0);
     return;
   }
 
   if (!Number.isFinite(pos) || pos <= 0.5) {
     writeResumeSec(animeId, tid, ep, 0);
     writeLastWatch(animeId, { translationId: tid, episode: ep, positionSec: 0, title });
+    syncWatchProgressToBot(animeId, tid, ep, 0);
     return;
   }
 
@@ -211,6 +237,7 @@ export function flushWatchProgress(
     title,
     ...(dur ? { durationSec: dur } : {}),
   });
+  syncWatchProgressToBot(animeId, tid, ep, sec);
 }
 
 export type LaunchWatch = {
@@ -230,17 +257,25 @@ export function resolveLaunchWatch(
     explicitEpisode: boolean;
     urlEpisode?: number;
     urlTranslationId?: string | null;
+    urlResumeSec?: number | null;
   },
 ): LaunchWatch {
   const urlEp =
     opts.urlEpisode != null && Number.isFinite(opts.urlEpisode) && opts.urlEpisode > 0
       ? Math.floor(opts.urlEpisode)
       : 1;
+  const urlResume =
+    opts.urlResumeSec != null &&
+    Number.isFinite(opts.urlResumeSec) &&
+    opts.urlResumeSec > 0.5
+      ? Math.floor(opts.urlResumeSec)
+      : null;
 
   if (opts.explicitEpisode) {
     const tid = opts.urlTranslationId?.trim() || null;
     const resume =
-      tid && animeId > 0 ? readResumeSec(animeId, tid, urlEp) : null;
+      urlResume ??
+      (tid && animeId > 0 ? readResumeSec(animeId, tid, urlEp) : null);
     return {
       episode: urlEp,
       translationId: tid,
@@ -253,7 +288,7 @@ export function resolveLaunchWatch(
   if (last) {
     const tid = opts.urlTranslationId?.trim() || last.translationId;
     const perEp = tid ? readResumeSec(animeId, tid, last.episode) : null;
-    const resume = perEp ?? (last.positionSec > 0.5 ? last.positionSec : null);
+    const resume = urlResume ?? perEp ?? (last.positionSec > 0.5 ? last.positionSec : null);
     return {
       episode: last.episode,
       translationId: tid || null,
@@ -263,7 +298,8 @@ export function resolveLaunchWatch(
   }
 
   const tid = opts.urlTranslationId?.trim() || null;
-  const resume = tid && animeId > 0 ? readResumeSec(animeId, tid, urlEp) : null;
+  const resume =
+    urlResume ?? (tid && animeId > 0 ? readResumeSec(animeId, tid, urlEp) : null);
   return {
     episode: urlEp,
     translationId: tid,

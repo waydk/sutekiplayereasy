@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   flushWatchProgress,
   formatClockSec,
@@ -7,6 +7,7 @@ import {
   readLastWatch,
   readResumeSec,
   resolveLaunchWatch,
+  syncWatchProgressToBot,
   writeLastWatch,
   writeResumeSec,
 } from "../watchProgress";
@@ -71,6 +72,17 @@ describe("resolveLaunchWatch", () => {
     expect(r.savedResumeSec).toBe(480);
     expect(r.usedSavedEpisode).toBe(true);
   });
+
+  it("prefers resume_sec from URL over localStorage", () => {
+    writeResumeSec(21, "2068", 2, 30);
+    const r = resolveLaunchWatch(21, {
+      explicitEpisode: true,
+      urlEpisode: 2,
+      urlTranslationId: "2068",
+      urlResumeSec: 600,
+    });
+    expect(r.savedResumeSec).toBe(600);
+  });
 });
 
 describe("flushWatchProgress", () => {
@@ -84,6 +96,19 @@ describe("flushWatchProgress", () => {
   it("stores title on last watch", () => {
     flushWatchProgress(21, "2068", 2, 120, 1200, "Test Anime");
     expect(readLastWatch(21)?.title).toBe("Test Anime");
+  });
+});
+
+describe("syncWatchProgressToBot", () => {
+  it("sends compact JSON via Telegram WebApp", () => {
+    const sendData = vi.fn();
+    vi.stubGlobal("window", {
+      Telegram: { WebApp: { sendData, initData: "x", platform: "ios" } },
+      localStorage,
+    } as unknown as Window & typeof globalThis);
+    syncWatchProgressToBot(21, "2068", 3, 90);
+    expect(sendData).toHaveBeenCalledWith('{"a":21,"t":"2068","e":3,"p":90}');
+    vi.unstubAllGlobals();
   });
 });
 
